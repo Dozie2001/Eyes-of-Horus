@@ -1,0 +1,40 @@
+# Test videos (downloaded, large files)
+test_videos/
+
+# Data directory (SQLite DB, snapshots, clips)
+data/
+
+# Environment variables / secrets
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OpenClaw local data
+agent/.openclaw/
