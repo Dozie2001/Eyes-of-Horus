@@ -1,87 +1,174 @@
 """
-Person detection using YOLO11s.
-Loads the model once, then runs detection on frames as they come in.
+Person detection using YOLO11s with ByteTrack tracking.
+Also detects carried objects (backpack, handbag, suitcase, laptop, phone)
+and associates them with nearby people.
 """
 
 from ultralytics import YOLO
+import math
+
+# COCO class IDs for objects we care about
+PERSON_CLASS = 0
+OBJECT_CLASSES = [24, 26, 28, 63, 67]  # backpack, handbag, suitcase, laptop, cell phone
+
+# Human-readable names for these classes
+OBJECT_NAMES = {
+    24: "backpack",
+    26: "handbag",
+    28: "suitcase",
+    63: "laptop",
+    67: "cell phone",
+}
+
+# All classes we detect (person + carried objects)
+ALL_CLASSES = [PERSON_CLASS] + OBJECT_CLASSES
 
 
 class Detector:
     """
-    Wraps the YOLO model for person detection.
+    Wraps the YOLO model for person detection, tracking, and object association.
 
-    The model loads once (takes ~2 seconds) and is reused for every frame.
-    Only detects people (COCO class 0).
+    Detects people (with ByteTrack tracking) AND carried objects.
+    Objects are associated with the nearest person.
 
     Usage:
         detector = Detector()
-        detections = detector.detect_people(frame)
-        # detections = [{"bbox": [x1,y1,x2,y2], "confidence": 0.87, "label": "person"}]
+        detector.load()
+        detections = detector.track_people(frame)
+        # [{"bbox": [...], "confidence": 0.87, "label": "person",
+        #   "track_id": 1, "nearby_objects": ["backpack"]}]
     """
 
-    def __init__(self, model_name="yolo11s.pt", confidence_threshold=0.5):
+    def __init__(self, model_name="yolo11s.pt", confidence_threshold=0.5,
+                 object_association_distance=200):
         """
         Args:
-            model_name: which YOLO model to load.
-                "yolo11s.pt" is the small model — good balance of speed and accuracy.
-                First run downloads it (~25MB), then it's cached locally.
-            confidence_threshold: minimum confidence to count as a detection (0.0 to 1.0).
-                0.5 means "only report if YOLO is at least 50% sure it's a person".
-                Higher = fewer false alarms but might miss some people.
-                Lower = catches more people but more false alarms.
+            model_name: YOLO model to load.
+            confidence_threshold: minimum confidence (0.0-1.0) to count as detection.
+            object_association_distance: max pixels between a person and an object
+                to consider the object "carried by" or "near" that person.
         """
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
+        self.object_association_distance = object_association_distance
         self.model = None
 
     def load(self):
-        """
-        Load the YOLO model into memory. Call this once at startup.
-        First run downloads the model file. After that it loads from cache.
-        """
+        """Load the YOLO model. Call once at startup."""
         print(f"Loading model: {self.model_name}")
         self.model = YOLO(self.model_name)
         print("Model loaded.")
 
     def detect_people(self, frame):
+        """One-shot person detection. No tracking, no object association."""
+        if self.model is None:
+            print("ERROR: Model not loaded. Call load() first.")
+            return []
+
+        results = self.model(
+            frame,
+            classes=[PERSON_CLASS],
+            conf=self.confidence_threshold,
+            verbose=False,
+        )
+
+        return self._parse_people(results)
+
+    def track_people(self, frame):
         """
-        Run person detection on a single frame.
+        Detection + ByteTrack tracking + object association.
 
-        Args:
-            frame: image frame from Camera.read_frame() (numpy array)
+        1. Tracks people across frames (ByteTrack gives persistent track IDs)
+        2. Detects carried objects (backpack, handbag, etc.)
+        3. Associates each object with the nearest person
 
-        Returns:
-            list of dicts, each with:
-                - bbox: [x1, y1, x2, y2] pixel coordinates of the bounding box
-                - confidence: how sure YOLO is (0.0 to 1.0)
-                - label: always "person" (we only detect people)
+        Returns list of person detections, each with a "nearby_objects" field.
         """
         if self.model is None:
             print("ERROR: Model not loaded. Call load() first.")
             return []
 
-        # Run YOLO on the frame
-        # classes=[0] = only detect "person" (class 0 in COCO dataset)
-        # verbose=False = don't print logs for every frame
-        results = self.model(
+        # Single pass: detect ALL classes (person + objects) with tracking
+        results = self.model.track(
             frame,
-            classes=[0],
+            classes=ALL_CLASSES,
             conf=self.confidence_threshold,
+            tracker="bytetrack.yaml",
+            persist=True,
             verbose=False,
         )
 
-        detections = []
+        # Separate people from objects
+        people = []
+        objects = []
 
         for result in results:
-            for box in result.boxes:
-                detection = {
-                    "bbox": box.xyxy[0].tolist(),                  # [x1, y1, x2, y2]
-                    "confidence": round(box.conf[0].item(), 2),    # e.g. 0.87
-                    "label": "person",
-                }
-                detections.append(detection)
+            if result.boxes is None:
+                continue
 
+            for box in result.boxes:
+                class_id = int(box.cls[0].item())
+                bbox = box.xyxy[0].tolist()
+                conf = round(box.conf[0].item(), 2)
+
+                if class_id == PERSON_CLASS:
+                    person = {
+                        "bbox": bbox,
+                        "confidence": conf,
+                        "label": "person",
+                        "nearby_objects": [],
+                    }
+                    if box.id is not None:
+                        person["track_id"] = int(box.id[0].item())
+                    people.append(person)
+                elif class_id in OBJECT_NAMES:
+                    objects.append({
+                        "bbox": bbox,
+                        "confidence": conf,
+                        "label": OBJECT_NAMES[class_id],
+                    })
+
+        # Associate objects with nearest person
+        for obj in objects:
+            obj_center = self._center(obj["bbox"])
+            nearest_person = None
+            nearest_dist = float("inf")
+
+            for person in people:
+                person_center = self._center(person["bbox"])
+                dist = self._distance(obj_center, person_center)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_person = person
+
+            if nearest_person and nearest_dist < self.object_association_distance:
+                nearest_person["nearby_objects"].append(obj["label"])
+
+        return people
+
+    def _parse_people(self, results):
+        """Parse YOLO results for person-only detection."""
+        detections = []
+        for result in results:
+            if result.boxes is None:
+                continue
+            for box in result.boxes:
+                detections.append({
+                    "bbox": box.xyxy[0].tolist(),
+                    "confidence": round(box.conf[0].item(), 2),
+                    "label": "person",
+                })
         return detections
+
+    def _center(self, bbox):
+        """Center point of a bounding box [x1, y1, x2, y2]."""
+        return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+    def _distance(self, pos1, pos2):
+        """Euclidean distance between two (x, y) points."""
+        dx = pos1[0] - pos2[0]
+        dy = pos1[1] - pos2[1]
+        return math.sqrt(dx * dx + dy * dy)
 
 
 # --- Test ---
@@ -90,23 +177,19 @@ if __name__ == "__main__":
     import os
     import sys
 
-    # Add parent directory to path so we can import sibling modules
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from capture.camera import Camera
     from utils import save_snapshot, draw_boxes
 
-    print("=== StangWatch Detection Test ===")
+    print("=== StangWatch Detection + Object Test ===")
 
-    # Step 1: Open webcam
     camera = Camera(source=0)
     if not camera.connect():
         exit(1)
 
-    # Step 2: Load YOLO model
     detector = Detector()
     detector.load()
 
-    # Step 3: Warm up camera and grab a frame
     camera.warm_up()
     frame = camera.read_frame()
 
@@ -114,22 +197,18 @@ if __name__ == "__main__":
         print("ERROR: Could not read frame")
         exit(1)
 
-    # Step 4: Run detection
-    print("Running person detection...")
-    detections = detector.detect_people(frame)
+    print("Running detection with object association...")
+    detections = detector.track_people(frame)
 
-    # Step 5: Report results
     if detections:
-        print(f"Detected {len(detections)} person(s):")
-        for i, det in enumerate(detections):
-            bbox = det["bbox"]
+        for det in detections:
+            tid = det.get("track_id", "N/A")
             conf = det["confidence"]
-            print(f"  Person {i+1}: confidence={conf}, "
-                  f"position=({int(bbox[0])},{int(bbox[1])}) to ({int(bbox[2])},{int(bbox[3])})")
+            objects = det.get("nearby_objects", [])
+            print(f"  Track #{tid}: confidence={conf}, objects={objects}")
     else:
-        print("No people detected in frame.")
+        print("No people detected.")
 
-    # Step 6: Save image with bounding boxes drawn on it
     annotated = draw_boxes(frame, detections)
     save_snapshot(annotated, "data/detection_test.jpg")
 
