@@ -28,6 +28,7 @@ from capture.camera import Camera
 from detection.detector import Detector
 from events.bus import event_bus
 from events.tracker import EventTracker
+from events.storage import EventStorage
 from utils import draw_boxes, filter_overlapping
 
 
@@ -101,6 +102,10 @@ def main():
     ]
     for evt in event_types:
         event_bus.on(evt, on_event(evt))
+
+    storage = EventStorage("data/stangwatch.db")
+    storage.subscribe(event_bus)
+    print(f"Database: data/stangwatch.db")
 
     # --- Set up components ---
     camera = Camera(source=0)
@@ -192,6 +197,13 @@ def main():
     print(f"Events fired: {_event_count}")
     print(f"Video saved: {video_path}")
     print(f"Snapshots saved: data/events/")
+
+    # Show what's in the database
+    counts = storage.count_by_type()
+    if counts:
+        print(f"\nDatabase (data/stangwatch.db):")
+        for event_type, count in counts.items():
+            print(f"  {event_type}: {count}")
     print("Done.")
 
 
