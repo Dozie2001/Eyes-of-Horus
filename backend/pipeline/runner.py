@@ -77,8 +77,11 @@ class PipelineRunner:
                 source = cam_cfg.resolved_source(self.config.secrets)
                 tracking = cam_cfg.effective_tracking(self.config.tracking)
             else:
-                source = 0  # fallback to webcam
+                source = 0
                 tracking = self.config.tracking
+
+            if isinstance(source, str) and source.isdigit():
+                source = int(source)
 
             # Initialize components
             camera = Camera(source=source)

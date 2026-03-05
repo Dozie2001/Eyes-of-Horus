@@ -8,6 +8,9 @@ data/
 .env
 .env.local
 .env.production
+*.pt
+*.onnx
+*.engine
 
 # Python
 __pycache__/

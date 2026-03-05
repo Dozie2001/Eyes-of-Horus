@@ -4,14 +4,17 @@ site:
   name: "My Location"
   log_level: INFO
 
-cameras: []
+cameras:
+  - name: "webcam"
+    source: "0"
+    enabled: true
 detection:
   model_name: "yolo11s.pt"
   confidence_threshold: 0.5
   association_distance: 200.0  # max pixels to associate an object with a person
 
 tracking:
-  loiter_threshold: 300.0
+  loiter_threshold: 10.0       # 10 seconds for testing (300 for production)
   stationary_threshold: 5.0     # pixels/frame — below this = standing still
   departure_seconds: 3.0        # seconds without detection before marking departed
   companion_distance: 200.0     # max pixels between two people for COMPANION event
