@@ -21,6 +21,9 @@ from events.bus import event_bus
 from events.tracker import EventTracker
 from events.storage import EventStorage
 from utils import filter_overlapping, save_snapshot, draw_boxes
+from agent.memory import SceneMemory
+from redis_client import get_redis
+from events.redis_bus import RedisBus
 
 
 class PipelineRunner:
@@ -97,8 +100,30 @@ class PipelineRunner:
             )
             detector.load()
 
+            # Choose event bus: RedisBus if enabled, else pyee
+            if self.config.redis.enabled:
+                try:
+                    r = get_redis(
+                        host=self.config.redis.host,
+                        port=self.config.redis.port,
+                        db=self.config.redis.db,
+                        username=self.config.redis.username,
+                        password=self.config.redis.password,
+                    )
+                    r.ping()
+                    bus = RedisBus(r, camera_id=cam_cfg.name if camera_configs else "cam1")
+                    scene_memory = SceneMemory(r, camera_id=cam_cfg.name if camera_configs else "cam1")
+                    print(f"Using RedisBus (stream: {bus.stream})")
+                except Exception as e:
+                    print(f"Redis unavailable ({e}), falling back to in-process bus")
+                    bus = event_bus
+                    scene_memory = None
+            else:
+                bus = event_bus
+                scene_memory = None
+
             tracker = EventTracker(
-                event_bus=event_bus,
+                event_bus=bus,
                 loiter_threshold=tracking.loiter_threshold,
                 quiet_hours=tracking.quiet_hours,
                 stationary_threshold=tracking.stationary_threshold,
@@ -107,10 +132,13 @@ class PipelineRunner:
             )
 
             # Subscribe storage to bus (auto-saves events)
-            storage.subscribe(event_bus)
+            storage.subscribe(bus)
 
             # Subscribe snapshot saver
-            self._subscribe_snapshot_saver()
+            self._subscribe_snapshot_saver(bus)
+
+            # Subscribe event logger (so events are visible in console)
+            self._subscribe_event_logger(bus)
 
             camera.warm_up()
             self.status = "running"
@@ -140,6 +168,10 @@ class PipelineRunner:
                 # Feed to event tracker (emits events via bus)
                 tracker.update(detections, timestamp)
 
+                # Update scene memory for agent context
+                if scene_memory is not None:
+                    scene_memory.update_scene(detections, tracker)
+
                 # Update stats
                 self.frame_count += 1
                 fps_frames += 1
@@ -161,7 +193,7 @@ class PipelineRunner:
             self.error = str(e)
             print(f"Pipeline error: {e}")
 
-    def _subscribe_snapshot_saver(self):
+    def _subscribe_snapshot_saver(self, bus):
         """Save a snapshot image for each event."""
         import os
         import cv2
@@ -218,4 +250,32 @@ class PipelineRunner:
                 def handler(event_data):
                     _save(event_type, event_data)
                 return handler
-            event_bus.on(et, make_handler(et))
+            bus.on(et, make_handler(et))
+
+    def _subscribe_event_logger(self, bus):
+        """Log events to console so they're visible during development."""
+        from events.tracker import (
+            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
+            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
+            EVENT_RETURNED,
+        )
+
+        all_events = [
+            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
+            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
+            EVENT_RETURNED,
+        ]
+
+        for et in all_events:
+            def make_handler(event_type):
+                def handler(event_data):
+                    track_id = event_data.get("track_id", "?")
+                    ts = event_data.get("timestamp", "")
+                    extra = ""
+                    if event_data.get("duration"):
+                        extra = f" | duration={event_data['duration']}s"
+                    if event_data.get("nearby_objects"):
+                        extra += f" | objects={event_data['nearby_objects']}"
+                    print(f"  EVENT: {event_type.upper()} | Track #{track_id} | {ts}{extra}")
+                return handler
+            bus.on(et, make_handler(et))

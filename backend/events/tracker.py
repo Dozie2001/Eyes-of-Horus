@@ -225,6 +225,7 @@ class EventTracker:
             if other.frames_missing > 10:
                 continue  # skip ghost tracks — not currently visible
             dist = self._distance(person.positions[-1], other.positions[-1])
+            print(f"  COMPANION CHECK: Track #{track_id} ↔ Track #{other_id} = {dist:.0f}px (threshold: {self.companion_distance}px)")
             if dist < self.companion_distance:
                 event_data = self._event_data(person, timestamp)
                 event_data["near_track_id"] = other_id

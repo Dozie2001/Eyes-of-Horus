@@ -138,6 +138,15 @@ class DetectionConfig(BaseModel):
         return v
 
 
+class RedisConfig(BaseModel):
+    enabled: bool = True
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 class StorageConfig(BaseModel):
     """SQLite + optional cloud sync."""
     db_path: str = "data/stangwatch.db"
@@ -166,6 +175,7 @@ class StangWatchConfig(BaseModel):
     cameras: list[CameraConfig] = []
     detection: DetectionConfig = DetectionConfig()
     tracking: TrackingConfig = TrackingConfig()
+    redis: RedisConfig = RedisConfig()
     storage: StorageConfig = StorageConfig()
     alerts: AlertConfig = AlertConfig()
     secrets: Secrets = Secrets()
@@ -221,7 +231,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -240,6 +250,16 @@ def get_config(
         cameras=[CameraConfig(**c) for c in raw.get("cameras", [])],
         detection=DetectionConfig(**raw.get("detection", {})),
         tracking=TrackingConfig(**raw.get("tracking", {})),
+        redis=RedisConfig(
+            **{
+                **raw.get("redis", {}),
+                # .env overrides config.yaml for Redis connection
+                **({"host": env["REDIS_HOST"]} if env.get("REDIS_HOST") else {}),
+                **({"port": int(env["REDIS_PORT"])} if env.get("REDIS_PORT") else {}),
+                **({"username": env["REDIS_USERNAME"]} if env.get("REDIS_USERNAME") else {}),
+                **({"password": env["REDIS_PASSWORD"]} if env.get("REDIS_PASSWORD") else {}),
+            }
+        ),
         storage=StorageConfig(**raw.get("storage", {})),
         alerts=AlertConfig(**raw.get("alerts", {})),
         secrets=secrets,
