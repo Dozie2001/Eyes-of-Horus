@@ -128,6 +128,25 @@ def get_events_by_track(
     return app.state.storage.get_by_track(bytetrack_id, limit=limit)
 
 
+
+@app.get("/agent/decisions")
+def get_agent_decisions(limit: int = Query(default=50, ge=1, le=500)):
+    """Recent AI agent evaluation decisions (all, including non-alerts)."""
+    runner = app.state.pipeline
+    if runner._eval_agent is None:
+        return []
+    return runner._eval_agent.decision_storage.get_recent(limit=limit)
+
+
+@app.get("/agent/alerts")
+def get_agent_alerts(limit: int = Query(default=50, ge=1, le=500)):
+    """Only decisions where the agent flagged an alert."""
+    runner = app.state.pipeline
+    if runner._eval_agent is None:
+        return []
+    return runner._eval_agent.decision_storage.get_alerts_only(limit=limit)
+
+
 # --- Static file mount for snapshots ---
 _snapshot_dir = _PROJECT_ROOT / "data" / "events"
 _snapshot_dir.mkdir(parents=True, exist_ok=True)

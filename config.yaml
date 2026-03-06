@@ -17,7 +17,13 @@ tracking:
   loiter_threshold: 10.0       # 10 seconds for testing (300 for production)
   stationary_threshold: 5.0     # pixels/frame — below this = standing still
   departure_seconds: 3.0        # seconds without detection before marking departed
-  companion_distance: 200.0     # max pixels between two people for COMPANION event
+  companion_distance: 1000.0     # max pixels between two people for COMPANION event
+
+redis:
+  enabled: true
+  host: localhost
+  port: 6379
+  db: 0
 
 storage:
   db_path: "data/stangwatch.db"
@@ -28,3 +34,8 @@ storage:
 alerts:
   cooldown_seconds: 60.0
   language: en
+
+agent:
+  enabled: true
+  model: "qwen2.5:7b"
+  cooldown_seconds: 120.0

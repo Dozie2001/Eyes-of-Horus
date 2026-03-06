@@ -22,6 +22,7 @@ from events.tracker import EventTracker
 from events.storage import EventStorage
 from utils import filter_overlapping, save_snapshot, draw_boxes
 from agent.memory import SceneMemory
+from agent.evaluator import EvalAgent
 from redis_client import get_redis
 from events.redis_bus import RedisBus
 
@@ -40,6 +41,7 @@ class PipelineRunner:
         self.config = config
         self.running = False
         self._thread = None
+        self._eval_agent = None
 
         # Public status (read by /pipeline/status endpoint)
         self.status = "stopped"     # stopped | starting | running | error
@@ -140,6 +142,20 @@ class PipelineRunner:
             # Subscribe event logger (so events are visible in console)
             self._subscribe_event_logger(bus)
 
+            # Start AI evaluation agent (if enabled and Ollama is reachable)
+            self._eval_agent = None
+            if self.config.agent.enabled:
+                redis_client = r if self.config.redis.enabled and scene_memory else None
+                agent = EvalAgent(
+                    config=self.config,
+                    storage=storage,
+                    scene_memory=scene_memory,
+                    redis_client=redis_client,
+                )
+                agent.subscribe(bus)
+                agent.start()
+                self._eval_agent = agent
+
             camera.warm_up()
             self.status = "running"
             print(f"Pipeline running: source={source}, FPS={camera.fps}")
@@ -185,6 +201,8 @@ class PipelineRunner:
                     fps_start = time.time()
 
             camera.release()
+            if self._eval_agent is not None:
+                self._eval_agent.stop()
             self.status = "stopped"
             print("Pipeline stopped.")
 

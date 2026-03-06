@@ -155,6 +155,15 @@ class StorageConfig(BaseModel):
     cloud_url: str = ""
 
 
+class AgentConfig(BaseModel):
+    """AI evaluation agent settings."""
+    enabled: bool = True
+    model: str = "qwen2.5:7b"
+    ollama_host: str = "http://localhost:11434"
+    timeout_seconds: float = 30.0
+    cooldown_seconds: float = 120.0  # min seconds between alerts for same track
+
+
 class AlertConfig(BaseModel):
     """Alert delivery settings."""
     cooldown_seconds: float = 60.0
@@ -178,6 +187,7 @@ class StangWatchConfig(BaseModel):
     redis: RedisConfig = RedisConfig()
     storage: StorageConfig = StorageConfig()
     alerts: AlertConfig = AlertConfig()
+    agent: AgentConfig = AgentConfig()
     secrets: Secrets = Secrets()
 
 
@@ -262,6 +272,7 @@ def get_config(
         ),
         storage=StorageConfig(**raw.get("storage", {})),
         alerts=AlertConfig(**raw.get("alerts", {})),
+        agent=AgentConfig(**raw.get("agent", {})),
         secrets=secrets,
     )
 
