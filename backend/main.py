@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import get_config
 from events.storage import EventStorage, ALL_EVENT_TYPES
+from agent.decisions import DecisionStorage
 from pipeline.runner import PipelineRunner
 
 
@@ -32,10 +33,10 @@ async def lifespan(app: FastAPI):
     db_path = str(_PROJECT_ROOT / config.storage.db_path)
 
     storage = EventStorage(db_path)
+    decisions = DecisionStorage(db_path)
     app.state.storage = storage
+    app.state.decisions = decisions
     app.state.config = config
-
-    # Start detection pipeline in background thread
     runner = PipelineRunner(config)
     app.state.pipeline = runner
 
@@ -132,19 +133,13 @@ def get_events_by_track(
 @app.get("/agent/decisions")
 def get_agent_decisions(limit: int = Query(default=50, ge=1, le=500)):
     """Recent AI agent evaluation decisions (all, including non-alerts)."""
-    runner = app.state.pipeline
-    if runner._eval_agent is None:
-        return []
-    return runner._eval_agent.decision_storage.get_recent(limit=limit)
+    return app.state.decisions.get_recent(limit=limit)
 
 
 @app.get("/agent/alerts")
 def get_agent_alerts(limit: int = Query(default=50, ge=1, le=500)):
     """Only decisions where the agent flagged an alert."""
-    runner = app.state.pipeline
-    if runner._eval_agent is None:
-        return []
-    return runner._eval_agent.decision_storage.get_alerts_only(limit=limit)
+    return app.state.decisions.get_alerts_only(limit=limit)
 
 
 # --- Static file mount for snapshots ---

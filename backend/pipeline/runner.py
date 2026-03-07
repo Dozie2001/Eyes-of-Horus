@@ -42,6 +42,7 @@ class PipelineRunner:
         self.running = False
         self._thread = None
         self._eval_agent = None
+        self._tracker = None
 
         # Public status (read by /pipeline/status endpoint)
         self.status = "stopped"     # stopped | starting | running | error
@@ -124,7 +125,7 @@ class PipelineRunner:
                 bus = event_bus
                 scene_memory = None
 
-            tracker = EventTracker(
+            self._tracker = EventTracker(
                 event_bus=bus,
                 loiter_threshold=tracking.loiter_threshold,
                 quiet_hours=tracking.quiet_hours,
@@ -182,16 +183,16 @@ class PipelineRunner:
                 detections = filter_overlapping(detections)
 
                 # Feed to event tracker (emits events via bus)
-                tracker.update(detections, timestamp)
+                self._tracker.update(detections, timestamp)
 
                 # Update scene memory for agent context
                 if scene_memory is not None:
-                    scene_memory.update_scene(detections, tracker)
+                    scene_memory.update_scene(detections, self._tracker)
 
                 # Update stats
                 self.frame_count += 1
                 fps_frames += 1
-                self.active_tracks = len(tracker.tracks)
+                self.active_tracks = len(self._tracker.tracks)
 
                 # Update FPS every second
                 elapsed = time.time() - fps_start

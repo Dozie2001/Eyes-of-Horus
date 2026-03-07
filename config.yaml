@@ -17,7 +17,10 @@ tracking:
   loiter_threshold: 10.0       # 10 seconds for testing (300 for production)
   stationary_threshold: 5.0     # pixels/frame — below this = standing still
   departure_seconds: 3.0        # seconds without detection before marking departed
-  companion_distance: 1000.0     # max pixels between two people for COMPANION event
+  companion_distance: 200.0      # max pixels between two people for COMPANION event
+  quiet_hours:
+    start: "22:00"
+    end: "06:00"
 
 redis:
   enabled: true
