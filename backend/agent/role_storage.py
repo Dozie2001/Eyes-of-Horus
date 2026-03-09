@@ -1,13 +1,10 @@
 """
 Role membership and invite code storage for StangWatch.
-
 Manages who is assigned to each escalation role (guard, supervisor, admin)
 and handles invite codes for self-registration via the Telegram bot.
-
 Tables:
 - role_membership: who is in what role (active/revoked)
 - invite_code: short-lived codes for joining via /join command
-
 Uses the same stangwatch.db database as other storage classes.
 """
 
@@ -41,10 +38,10 @@ class InviteCode(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     code: str = Field(index=True, unique=True)
-    role: str                                     # role to assign on join
-    created_by_chat_id: str                       # admin who created it
+    role: str                                 
+    created_by_chat_id: str
     expires_at: datetime
-    used_by_chat_id: str = ""                     # empty until redeemed
+    used_by_chat_id: str = "" 
     used_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
