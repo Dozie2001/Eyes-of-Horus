@@ -9,9 +9,8 @@ import math
 
 # COCO class IDs for objects we care about
 PERSON_CLASS = 0
-OBJECT_CLASSES = [24, 26, 28, 63, 67]  # backpack, handbag, suitcase, laptop, cell phone
+OBJECT_CLASSES = [24, 26, 28, 63, 67]  # backpack, handbag, suitcase, laptop, cell phone this if 
 
-# Human-readable names for these classes
 OBJECT_NAMES = {
     24: "backpack",
     26: "handbag",
@@ -20,7 +19,6 @@ OBJECT_NAMES = {
     67: "cell phone",
 }
 
-# All classes we detect (person + carried objects)
 ALL_CLASSES = [PERSON_CLASS] + OBJECT_CLASSES
 
 

@@ -24,6 +24,7 @@ import time
 from datetime import datetime
 
 from agent.ollama_client import OllamaClient
+from agent.vision import VisionDescriber
 from agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from agent.decisions import DecisionStorage
 from agent.telegram import TelegramSender
@@ -53,22 +54,31 @@ class EvalAgent:
     - Never blocks the detection pipeline
     """
 
-    def __init__(self, config, storage, scene_memory=None, redis_client=None):
+    def __init__(self, config, storage, scene_memory=None, redis_client=None,
+                 escalation=None):
         """
         Args:
             config: StangWatchConfig
             storage: EventStorage for track history lookups
             scene_memory: SceneMemory for current scene context (or None)
             redis_client: Redis connection for cooldown tracking (or None)
+            escalation: EscalationManager instance (or None for simple sends)
         """
         self.config = config
         self.storage = storage
         self.scene_memory = scene_memory
         self.redis = redis_client
 
-        # Ollama client
+        # Ollama text client (reasoning + decisions)
         self._ollama = OllamaClient(
             model=config.agent.model,
+            host=config.agent.ollama_host,
+            timeout=config.agent.timeout_seconds,
+        )
+
+        # Vision describer (snapshot → plain-English description)
+        self._vision = VisionDescriber(
+            model=config.agent.vision_model,
             host=config.agent.ollama_host,
             timeout=config.agent.timeout_seconds,
         )
@@ -82,11 +92,14 @@ class EvalAgent:
         )
         self._decisions = DecisionStorage(db_path)
 
-        # Telegram sender
+        # Telegram sender (fallback when escalation is disabled)
         self._telegram = TelegramSender(
             bot_token=config.secrets.telegram_bot_token,
             chat_id=config.secrets.telegram_chat_id,
         )
+
+        # Escalation manager (optional — if configured, routes alerts through chain)
+        self._escalation = escalation
 
         # Work queue (maxsize prevents unbounded memory if Ollama is slow)
         self._queue = queue.Queue(maxsize=50)
@@ -179,7 +192,19 @@ class EvalAgent:
                 print(f"  AGENT: Ollama unavailable, skipping {event_type} for Track #{track_id}")
                 continue
 
-            # Build context
+            # Step 1: Find video clip and snapshot
+            video_path = self._find_video(event_type, event_data)
+            snapshot_path = self._find_snapshot(event_type, event_data)
+
+            # Step 2: Vision perceives — describe what the camera shows
+            # Prefer multi-frame video analysis over single snapshot
+            visual_description = None
+            if video_path and self._vision.is_available():
+                visual_description = self._vision.describe_video(video_path)
+            if visual_description is None and snapshot_path and self._vision.is_available():
+                visual_description = self._vision.describe(snapshot_path)
+
+            # Step 3: Build context (now includes visual description)
             scene_summary = None
             if self.scene_memory is not None:
                 scene_summary = self.scene_memory.get_scene_summary()
@@ -188,9 +213,10 @@ class EvalAgent:
 
             user_prompt = build_user_prompt(
                 event_type, event_data, scene_summary, track_history,
+                visual_description=visual_description,
             )
 
-            # Evaluate with Ollama
+            # Step 4: Text model reasons — decides severity
             start_ms = time.time()
             result = self._ollama.evaluate(SYSTEM_PROMPT, user_prompt)
             eval_ms = int((time.time() - start_ms) * 1000)
@@ -204,8 +230,17 @@ class EvalAgent:
             reason = result["reason"]
             recommendation = result.get("recommendation", "")
 
+            # Hard override: normal hours + no objects → cap at "low"
+            is_quiet = event_data.get("is_quiet_hours", False)
+            has_objects = bool(event_data.get("nearby_objects", []))
+            if not is_quiet and not has_objects:
+                if severity in ("medium", "high"):
+                    severity = "low"
+                    alert = False
+                    reason += " [downgraded: normal hours, no objects]"
+
             # Save decision (always, for auditability)
-            self._decisions.save_decision(
+            decision_id = self._decisions.save_decision(
                 event_type=event_type,
                 track_id=track_id,
                 alert=alert,
@@ -219,23 +254,36 @@ class EvalAgent:
                 # Set cooldown so we don't spam
                 self._set_cooldown(track_id)
 
-                # Find snapshot
-                snapshot_path = self._find_snapshot(event_type, event_data)
-
-                # Send Telegram alert
-                if self._telegram.is_configured():
+                # Route through escalation if configured, otherwise simple send
+                if self._escalation and self._escalation.is_configured():
+                    alert_id = self._escalation.escalate(
+                        decision_id=decision_id,
+                        event_type=event_type,
+                        track_id=track_id,
+                        severity=severity,
+                        reason=reason,
+                        recommendation=recommendation,
+                        description=visual_description or "",
+                        snapshot_path=snapshot_path,
+                        video_path=video_path,
+                    )
+                    status = f"escalated (#{alert_id})" if alert_id else "escalation failed"
+                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | {status} | {eval_ms}ms")
+                elif self._telegram.is_configured():
                     sent = self._telegram.send_alert(
                         event_type=event_type,
                         track_id=track_id,
                         severity=severity,
                         reason=reason,
                         recommendation=recommendation,
+                        description=visual_description or "",
                         snapshot_path=snapshot_path,
+                        video_path=video_path,
                     )
                     status = "sent" if sent else "FAILED"
                     print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | Telegram: {status} | {eval_ms}ms")
                 else:
-                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | Telegram not configured | {eval_ms}ms")
+                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
             else:
                 print(f"  AGENT: {severity} | {event_type} Track #{track_id} | {reason[:60]} | {eval_ms}ms")
 
@@ -269,6 +317,34 @@ class EvalAgent:
 
         # Fallback to in-memory
         self._memory_cooldowns[track_id] = time.time() + self._cooldown_seconds
+
+    def _find_video(self, event_type, event_data):
+        """
+        Find the video clip saved by the pipeline's clip handler.
+
+        The clip handler saves to:
+            data/events/evt_{YYYYMMDD_HHMMSS}_track{id}_{event_type}.mp4
+        """
+        try:
+            ts = datetime.fromisoformat(event_data["timestamp"])
+            ts_str = ts.strftime("%Y%m%d_%H%M%S")
+            track_id = event_data.get("track_id", 0)
+            filename = f"evt_{ts_str}_track{track_id}_{event_type}.mp4"
+
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            path = os.path.join(project_root, "data", "events", filename)
+
+            if os.path.exists(path):
+                return path
+
+            cwd_path = os.path.join("data", "events", filename)
+            if os.path.exists(cwd_path):
+                return cwd_path
+
+        except Exception:
+            pass
+
+        return None
 
     def _find_snapshot(self, event_type, event_data):
         """

@@ -1,15 +1,3 @@
-"""
-Prompt builder for StangWatch AI evaluation agent.
-
-Builds system + user prompts that give the LLM three layers of context:
-1. The triggering event (type, track_id, duration, movement, objects, quiet hours)
-2. Current scene from SceneMemory (who else is on camera)
-3. Track history from EventStorage (this person's past events)
-
-The LLM returns a JSON decision:
-    {"alert": bool, "severity": "ignore|low|medium|high",
-     "reason": "...", "recommendation": "..."}
-"""
 
 
 SYSTEM_PROMPT = """You are a security monitoring AI for a CCTV surveillance system in Nigeria.
@@ -35,6 +23,9 @@ You receive structured data about what the cameras see. You must respond with a 
 - People appearing briefly during normal hours
 - Normal foot traffic (appearing then departing quickly)
 - A single person during daytime with no unusual behavior
+- A person sitting or standing at a desk/workstation (this is a webcam, not a CCTV)
+- Loitering during normal hours — people stand around, that's normal
+- Companion events during normal hours — people meet, that's normal
 
 ## Severity levels:
 
@@ -43,13 +34,20 @@ You receive structured data about what the cameras see. You must respond with a 
 - **medium**: Warrants attention. Alert the operator.
 - **high**: Urgent. Multiple suspicious signals combined (quiet hours + loitering + objects, or repeated returns at night).
 
-## Rules:
+## HARD RULES (never break these):
+
+1. If quiet_hours is "no" AND no unusual objects near the person → maximum severity is "low", alert MUST be false.
+2. "medium" requires AT MINIMUM: quiet hours = YES, OR person carrying unusual objects (backpack, bag, suitcase).
+3. "high" requires: quiet hours = YES AND at least one other signal (loitering, objects, returned).
+4. A single person loitering during normal hours is ALWAYS "ignore" regardless of how long they've been there.
+5. Companion events during normal hours with no objects are ALWAYS "ignore".
+6. "appeared" during normal hours with no objects is ALWAYS "ignore".
+
+## Other rules:
 
 - Be factual. Describe WHAT you see, not what you think someone intends.
 - Never say "thief", "criminal", "suspicious person". Say "person detected at [time] with [behavior]".
-- If quiet hours AND any other signal → at minimum severity "medium".
-- If NOT quiet hours and behavior is mundane → severity "ignore" or "low".
-- Keep your reason to 1-2 sentences.
+- Keep your reason to 1-2 sentences. Be very specific about the behavior and action.
 - Keep your recommendation to 1 sentence (what the operator should do).
 
 ## Response format (JSON only):
@@ -58,7 +56,7 @@ You receive structured data about what the cameras see. You must respond with a 
 
 
 def build_user_prompt(event_type, event_data, scene_summary=None,
-                      track_history=None):
+                      track_history=None, visual_description=None):
     """
     Build the user prompt with three layers of context.
 
@@ -98,7 +96,15 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         parts.append(f"Objects before: {before if before else 'none'}")
         parts.append(f"Objects after: {after if after else 'none'}")
 
-    # Layer 2: Current scene context
+    # Layer 2: Visual description (from vision LLM)
+    parts.append("")
+    parts.append("## What the camera shows")
+    if visual_description:
+        parts.append(visual_description)
+    else:
+        parts.append("No visual description available.")
+
+    # Layer 3: Current scene context
     parts.append("")
     parts.append("## Current scene")
     if scene_summary and scene_summary.get("people_count", 0) > 0:
@@ -114,7 +120,7 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
     else:
         parts.append("No scene data available (Redis may be down)")
 
-    # Layer 3: Track history
+    # Layer 4: Track history
     parts.append("")
     parts.append("## This person's history")
     if track_history:

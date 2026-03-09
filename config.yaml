@@ -19,7 +19,7 @@ tracking:
   departure_seconds: 3.0        # seconds without detection before marking departed
   companion_distance: 200.0      # max pixels between two people for COMPANION event
   quiet_hours:
-    start: "22:00"
+    start: "21:00"
     end: "06:00"
 
 redis:
@@ -41,4 +41,32 @@ alerts:
 agent:
   enabled: true
   model: "qwen2.5:7b"
+  vision_model: "qwen2.5vl:7b"
   cooldown_seconds: 120.0
+escalation:
+  enabled: true
+  roles:
+    - name: guard
+      level: 1
+      abilities: [acknowledge, mute_1h]
+    - name: supervisor
+      level: 2
+      abilities: [acknowledge, mute_8h]
+    - name: admin
+      level: 3
+      abilities: [acknowledge, configure, mute_permanent]
+
+  policies:
+    - severity: medium
+      chain:
+        - role: guard
+          timeout_minutes: 5
+        - role: supervisor
+          timeout_minutes: 10
+        - role: admin
+
+    - severity: high
+      chain:
+        - role: guard
+          timeout_minutes: 2
+        - role: admin

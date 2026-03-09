@@ -159,6 +159,7 @@ class AgentConfig(BaseModel):
     """AI evaluation agent settings."""
     enabled: bool = True
     model: str = "qwen2.5:7b"
+    vision_model: str = "qwen2.5vl:7b"  # vision LLM for snapshot descriptions
     ollama_host: str = "http://localhost:11434"
     timeout_seconds: float = 30.0
     cooldown_seconds: float = 120.0  # min seconds between alerts for same track
@@ -178,6 +179,36 @@ class AlertConfig(BaseModel):
         return v
 
 
+class EscalationRole(BaseModel):
+    """One role in the escalation chain (guard, supervisor, admin).
+
+    Defines structure only — who is assigned to each role is stored in the
+    role_membership DB table, managed via bot commands or dashboard API.
+    """
+    name: str
+    level: int                              # 1=guard, 2=supervisor, 3=admin
+    abilities: list[str] = ["acknowledge"]  # acknowledge, mute_1h, mute_8h, mute_permanent, configure
+
+
+class EscalationStep(BaseModel):
+    """One step in an escalation chain — a role + how long to wait."""
+    role: str
+    timeout_minutes: int = 0  # 0 = last in chain, no further escalation
+
+
+class EscalationPolicy(BaseModel):
+    """Escalation chain for a given severity level."""
+    severity: str             # "medium" or "high"
+    chain: list[EscalationStep]
+
+
+class EscalationConfig(BaseModel):
+    """Escalation policy engine settings. Off by default for backward compat."""
+    enabled: bool = False
+    roles: list[EscalationRole] = []
+    policies: list[EscalationPolicy] = []
+
+
 class StangWatchConfig(BaseModel):
     """Top-level config combining all sections."""
     site: SiteConfig = SiteConfig()
@@ -188,11 +219,43 @@ class StangWatchConfig(BaseModel):
     storage: StorageConfig = StorageConfig()
     alerts: AlertConfig = AlertConfig()
     agent: AgentConfig = AgentConfig()
+    escalation: EscalationConfig = EscalationConfig()
     secrets: Secrets = Secrets()
 
 
 # --- Singleton cache ---
 _cached_config: Optional[StangWatchConfig] = None
+
+
+def _parse_escalation(raw_esc: dict) -> EscalationConfig:
+    """Parse the escalation section from raw YAML dict.
+
+    Roles define structure only (name, level, abilities).
+    Who is assigned to each role lives in the role_membership DB table.
+    """
+    if not raw_esc:
+        return EscalationConfig()
+
+    roles = [
+        EscalationRole(
+            name=r["name"],
+            level=r["level"],
+            abilities=r.get("abilities", ["acknowledge"]),
+        )
+        for r in raw_esc.get("roles", [])
+    ]
+    policies = [
+        EscalationPolicy(
+            severity=p["severity"],
+            chain=[EscalationStep(**s) for s in p.get("chain", [])],
+        )
+        for p in raw_esc.get("policies", [])
+    ]
+    return EscalationConfig(
+        enabled=raw_esc.get("enabled", False),
+        roles=roles,
+        policies=policies,
+    )
 
 
 def get_config(
@@ -273,6 +336,7 @@ def get_config(
         storage=StorageConfig(**raw.get("storage", {})),
         alerts=AlertConfig(**raw.get("alerts", {})),
         agent=AgentConfig(**raw.get("agent", {})),
+        escalation=_parse_escalation(raw.get("escalation", {})),
         secrets=secrets,
     )
 

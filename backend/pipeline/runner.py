@@ -11,6 +11,8 @@ Usage:
     runner.stop()               # clean shutdown
 """
 
+import collections
+import os
 import threading
 import time
 from datetime import datetime
@@ -37,8 +39,9 @@ class PipelineRunner:
     - FastAPI only reads the database, pipeline only writes
     """
 
-    def __init__(self, config):
+    def __init__(self, config, escalation=None):
         self.config = config
+        self._escalation = escalation
         self.running = False
         self._thread = None
         self._eval_agent = None
@@ -50,6 +53,11 @@ class PipelineRunner:
         self.frame_count = 0
         self.fps = 0.0
         self.active_tracks = 0
+
+        # Frame ring buffer for video clips (initialized after camera connects)
+        self._frame_buffer = None
+        self._source_fps = 15
+        self._frame_size = (0, 0)
 
     def start(self, storage):
         """Start the detection loop in a background thread."""
@@ -152,10 +160,17 @@ class PipelineRunner:
                     storage=storage,
                     scene_memory=scene_memory,
                     redis_client=redis_client,
+                    escalation=self._escalation,
                 )
                 agent.subscribe(bus)
                 agent.start()
                 self._eval_agent = agent
+
+            # Initialize frame ring buffer (5 seconds of frames)
+            self._source_fps = max(camera.fps, 10) or 15
+            self._frame_size = (camera.width, camera.height)
+            buffer_frames = int(5 * self._source_fps)
+            self._frame_buffer = collections.deque(maxlen=buffer_frames)
 
             camera.warm_up()
             self.status = "running"
@@ -177,6 +192,7 @@ class PipelineRunner:
 
                 timestamp = datetime.now()
                 self._current_frame = frame  # available to snapshot handler
+                self._frame_buffer.append(frame.copy())  # ring buffer for clips
 
                 # Detect + track
                 detections = detector.track_people(frame)
@@ -213,13 +229,9 @@ class PipelineRunner:
             print(f"Pipeline error: {e}")
 
     def _subscribe_snapshot_saver(self, bus):
-        """Save a snapshot image for each event."""
-        import os
+        """Save a snapshot image + video clip for each event."""
         import cv2
 
-        # We need access to the current frame from the event handler.
-        # Since the handler runs synchronously in the pipeline thread
-        # (same thread as the detection loop), we use a mutable container.
         self._current_frame = None
 
         def _save(event_type, event_data):
@@ -232,8 +244,9 @@ class PipelineRunner:
             ts = datetime.fromisoformat(event_data["timestamp"])
             ts_str = ts.strftime("%Y%m%d_%H%M%S")
 
-            filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
-            path = f"data/events/{filename}"
+            # Save snapshot (still needed for vision model)
+            snap_filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
+            snap_path = f"data/events/{snap_filename}"
 
             if bbox:
                 dets = [{"bbox": bbox, "confidence": 1.0, "label": f"#{track_id}"}]
@@ -250,7 +263,18 @@ class PipelineRunner:
                 (0, 0, 255),
                 2,
             )
-            cv2.imwrite(path, frame)
+            cv2.imwrite(snap_path, frame)
+
+            # Save video clip from frame buffer (pre-event footage)
+            if self._frame_buffer and len(self._frame_buffer) > 10:
+                clip_filename = f"evt_{ts_str}_track{track_id}_{event_type}.mp4"
+                clip_path = f"data/events/{clip_filename}"
+                frames = list(self._frame_buffer)
+                threading.Thread(
+                    target=self._write_clip,
+                    args=(clip_path, frames),
+                    daemon=True,
+                ).start()
 
         from events.tracker import (
             EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
@@ -270,6 +294,32 @@ class PipelineRunner:
                     _save(event_type, event_data)
                 return handler
             bus.on(et, make_handler(et))
+
+    def _write_clip(self, path, frames):
+        """Write buffered frames to an MP4 video file. Runs in background thread."""
+        import cv2
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+
+            # Cap output at 15fps for manageable file sizes
+            output_fps = min(self._source_fps, 15)
+            step = max(1, round(self._source_fps / output_fps))
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(
+                path, fourcc, output_fps,
+                (self._frame_size[0], self._frame_size[1]),
+            )
+
+            for i, frame in enumerate(frames):
+                if i % step == 0:
+                    writer.write(frame)
+
+            writer.release()
+            print(f"  CLIP: Saved {path} ({len(frames)} frames)")
+        except Exception as e:
+            print(f"  CLIP: Failed to write {path}: {e}")
 
     def _subscribe_event_logger(self, bus):
         """Log events to console so they're visible during development."""
