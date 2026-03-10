@@ -313,6 +313,31 @@ def acknowledge_escalation(alert_id: int):
     return result
 
 
+@app.put("/escalation/{alert_id}/dismiss")
+def dismiss_escalation(alert_id: int):
+    """Dismiss an escalation alert as false alarm via API (backup for Telegram button)."""
+    escalation = app.state.escalation
+    if escalation is None:
+        raise HTTPException(status_code=503, detail="Escalation not enabled")
+
+    result = escalation.dismiss(alert_id, username="api")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Alert #{alert_id} not found")
+    return result
+
+
+# --- Metrics endpoints ---
+
+@app.get("/metrics/alert-quality")
+def get_alert_quality_metrics(days: int = Query(default=30, ge=1, le=365)):
+    """Alert outcome statistics — false positive rates by event type and severity."""
+    escalation = app.state.escalation
+    if escalation is None:
+        raise HTTPException(status_code=503, detail="Escalation not enabled")
+
+    return escalation.storage.get_outcome_stats(days=days)
+
+
 # --- Static file mount for snapshots ---
 _snapshot_dir = _PROJECT_ROOT / "data" / "events"
 _snapshot_dir.mkdir(parents=True, exist_ok=True)

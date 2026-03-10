@@ -99,16 +99,18 @@ class TelegramSender:
     def send_alert_with_button(self, chat_id, event_type, track_id, severity,
                                reason, recommendation="", description="",
                                snapshot_path=None, video_path=None,
-                               callback_data=""):
+                               ack_callback_data="",
+                               dismiss_callback_data=""):
         """
-        Send an alert with an inline "Acknowledge" button.
+        Send an alert with inline Acknowledge and False Alarm buttons.
 
         Returns:
             dict with "ok" and "message_id", or False on failure.
         """
         reply_markup = {
             "inline_keyboard": [[
-                {"text": "✅ Acknowledge", "callback_data": callback_data}
+                {"text": "✅ Acknowledge", "callback_data": ack_callback_data},
+                {"text": "❌ False Alarm", "callback_data": dismiss_callback_data},
             ]]
         }
         return self.send_alert(

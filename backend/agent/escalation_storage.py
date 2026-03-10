@@ -9,10 +9,10 @@ Uses the same stangwatch.db database as EventStorage and DecisionStorage.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import Column, event as sa_event
+from sqlalchemy import Column, event as sa_event, text
 from sqlalchemy.types import Text
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
@@ -28,9 +28,11 @@ class EscalationAlert(SQLModel, table=True):
     severity: str                                # "medium" or "high"
     current_level: int = 0                       # position in the chain (0, 1, 2...)
     max_level: int = 0                           # total chain length - 1
-    status: str = Field(default="pending", index=True)  # pending | acknowledged | expired
+    status: str = Field(default="pending", index=True)  # pending | acknowledged | expired | dismissed
+    outcome: str = Field(default="unresolved")   # unresolved | true_alert | false_alarm
     acknowledged_by: str = ""                    # Telegram username
     acknowledged_at: Optional[datetime] = None
+    dismissed_by: str = ""                       # Telegram username (who pressed False Alarm)
     telegram_message_ids: str = ""               # JSON: {"chat_id": message_id}
     snapshot_path: str = ""
     video_path: str = ""
@@ -66,6 +68,20 @@ class EscalationStorage:
             cursor.close()
 
         SQLModel.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns that don't exist yet (SQLModel create_all won't do this)."""
+        with self.engine.connect() as conn:
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(escalation_alert)"))}
+            migrations = [
+                ("outcome", "TEXT NOT NULL DEFAULT 'unresolved'"),
+                ("dismissed_by", "TEXT NOT NULL DEFAULT ''"),
+            ]
+            for col_name, col_def in migrations:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE escalation_alert ADD COLUMN {col_name} {col_def}"))
+            conn.commit()
 
     def save_alert(self, decision_id, event_type, track_id, severity,
                    max_level, snapshot_path="", video_path="",
@@ -108,14 +124,31 @@ class EscalationStorage:
             return [self._to_dict(a) for a in alerts]
 
     def mark_acknowledged(self, alert_id, username=""):
-        """Mark an alert as acknowledged."""
+        """Mark an alert as acknowledged (confirmed real)."""
         with Session(self.engine) as session:
             alert = session.get(EscalationAlert, alert_id)
             if alert is None:
                 return None
             alert.status = "acknowledged"
+            alert.outcome = "true_alert"
             alert.acknowledged_by = username
             alert.acknowledged_at = datetime.now()
+            alert.next_escalation_at = None  # cancel further escalation
+            session.add(alert)
+            session.commit()
+            session.refresh(alert)
+            return self._to_dict(alert)
+
+    def mark_dismissed(self, alert_id, username=""):
+        """Mark an alert as a false alarm."""
+        with Session(self.engine) as session:
+            alert = session.get(EscalationAlert, alert_id)
+            if alert is None:
+                return None
+            alert.status = "dismissed"
+            alert.outcome = "false_alarm"
+            alert.dismissed_by = username
+            alert.acknowledged_at = datetime.now()  # reuse as "resolved at" timestamp
             alert.next_escalation_at = None  # cancel further escalation
             session.add(alert)
             session.commit()
@@ -185,6 +218,80 @@ class EscalationStorage:
                 return None
             return self._to_dict(alert)
 
+    def get_outcome_stats(self, days=30):
+        """Get alert outcome statistics for the last N days."""
+        cutoff = datetime.now() - timedelta(days=days)
+        with self.engine.connect() as conn:
+            # Overall totals
+            rows = conn.execute(text(
+                "SELECT outcome, COUNT(*) as cnt FROM escalation_alert "
+                "WHERE created_at >= :cutoff GROUP BY outcome"
+            ), {"cutoff": cutoff.isoformat()}).fetchall()
+
+            totals = {"unresolved": 0, "true_alert": 0, "false_alarm": 0}
+            for outcome, cnt in rows:
+                if outcome in totals:
+                    totals[outcome] = cnt
+            total = sum(totals.values())
+
+            # By event_type
+            et_rows = conn.execute(text(
+                "SELECT event_type, outcome, COUNT(*) as cnt FROM escalation_alert "
+                "WHERE created_at >= :cutoff GROUP BY event_type, outcome"
+            ), {"cutoff": cutoff.isoformat()}).fetchall()
+
+            by_event_type = {}
+            for event_type, outcome, cnt in et_rows:
+                if event_type not in by_event_type:
+                    by_event_type[event_type] = {"total": 0, "true": 0, "false": 0, "unresolved": 0}
+                entry = by_event_type[event_type]
+                entry["total"] += cnt
+                if outcome == "true_alert":
+                    entry["true"] += cnt
+                elif outcome == "false_alarm":
+                    entry["false"] += cnt
+                else:
+                    entry["unresolved"] += cnt
+
+            for entry in by_event_type.values():
+                resolved = entry["true"] + entry["false"]
+                entry["fp_rate"] = round(entry["false"] / resolved, 2) if resolved > 0 else 0.0
+
+            # By severity
+            sev_rows = conn.execute(text(
+                "SELECT severity, outcome, COUNT(*) as cnt FROM escalation_alert "
+                "WHERE created_at >= :cutoff GROUP BY severity, outcome"
+            ), {"cutoff": cutoff.isoformat()}).fetchall()
+
+            by_severity = {}
+            for severity, outcome, cnt in sev_rows:
+                if severity not in by_severity:
+                    by_severity[severity] = {"total": 0, "true": 0, "false": 0, "unresolved": 0}
+                entry = by_severity[severity]
+                entry["total"] += cnt
+                if outcome == "true_alert":
+                    entry["true"] += cnt
+                elif outcome == "false_alarm":
+                    entry["false"] += cnt
+                else:
+                    entry["unresolved"] += cnt
+
+            for entry in by_severity.values():
+                resolved = entry["true"] + entry["false"]
+                entry["fp_rate"] = round(entry["false"] / resolved, 2) if resolved > 0 else 0.0
+
+            resolved_total = totals["true_alert"] + totals["false_alarm"]
+            return {
+                "period_days": days,
+                "total_alerts": total,
+                "true_alerts": totals["true_alert"],
+                "false_alarms": totals["false_alarm"],
+                "unresolved": totals["unresolved"],
+                "false_positive_rate": round(totals["false_alarm"] / resolved_total, 2) if resolved_total > 0 else 0.0,
+                "by_event_type": by_event_type,
+                "by_severity": by_severity,
+            }
+
     def _to_dict(self, alert):
         """Convert an EscalationAlert to a plain dict."""
         return {
@@ -196,8 +303,10 @@ class EscalationStorage:
             "current_level": alert.current_level,
             "max_level": alert.max_level,
             "status": alert.status,
+            "outcome": alert.outcome,
             "acknowledged_by": alert.acknowledged_by,
             "acknowledged_at": alert.acknowledged_at.isoformat() if alert.acknowledged_at else None,
+            "dismissed_by": alert.dismissed_by,
             "telegram_message_ids": alert.get_message_ids(),
             "snapshot_path": alert.snapshot_path,
             "video_path": alert.video_path,

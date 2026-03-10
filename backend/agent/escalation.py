@@ -160,7 +160,6 @@ class EscalationManager:
             print(f"  ESCALATION: No active members for role '{role_name}'")
             return alert_id
 
-        callback_data = f"ack:{alert_id}"
         msg_ids = {}
         for member in members:
             chat_id = member["telegram_chat_id"]
@@ -174,7 +173,8 @@ class EscalationManager:
                 description=description,
                 snapshot_path=snapshot_path,
                 video_path=video_path,
-                callback_data=callback_data,
+                ack_callback_data=f"ack:{alert_id}",
+                dismiss_callback_data=f"dismiss:{alert_id}",
             )
             if result and isinstance(result, dict) and result.get("message_id"):
                 msg_ids[chat_id] = result["message_id"]
@@ -200,6 +200,20 @@ class EscalationManager:
 
         self._edit_messages_acknowledged(alert_data, username)
         print(f"  ESCALATION: Alert #{alert_id} acknowledged by {username}")
+        return alert_data
+
+    def dismiss(self, alert_id, username="api"):
+        """
+        Manually dismiss an alert as false alarm (via API or Telegram button).
+
+        Returns the updated alert dict, or None if not found.
+        """
+        alert_data = self._storage.mark_dismissed(alert_id, username=username)
+        if alert_data is None:
+            return None
+
+        self._edit_messages_dismissed(alert_data, username)
+        print(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by {username}")
         return alert_data
 
     # --- Background loops ---
@@ -249,7 +263,6 @@ class EscalationManager:
                 self._storage.advance_level(alert_id, next_escalation_at=next_esc_at)
                 continue
 
-            callback_data = f"ack:{alert_id}"
             new_msg_ids = {}
             for member in members:
                 chat_id = member["telegram_chat_id"]
@@ -262,7 +275,8 @@ class EscalationManager:
                     recommendation="Please acknowledge this alert",
                     snapshot_path=alert_data.get("snapshot_path") or None,
                     video_path=alert_data.get("video_path") or None,
-                    callback_data=callback_data,
+                    ack_callback_data=f"ack:{alert_id}",
+                    dismiss_callback_data=f"dismiss:{alert_id}",
                 )
                 if result and isinstance(result, dict) and result.get("message_id"):
                     new_msg_ids[chat_id] = result["message_id"]
@@ -316,18 +330,22 @@ class EscalationManager:
                     self._handle_command(message)
 
     def _handle_callback(self, callback):
-        """Process an acknowledge button press."""
+        """Process an acknowledge or dismiss button press."""
         callback_id = callback.get("id")
         data = callback.get("data", "")
         user = callback.get("from", {})
         username = user.get("username") or user.get("first_name", "unknown")
 
-        if not data.startswith("ack:"):
+        # Parse action:alert_id format
+        if ":" not in data:
+            return
+        action, alert_id_str = data.split(":", 1)
+        if action not in ("ack", "dismiss"):
             return
 
         try:
-            alert_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
+            alert_id = int(alert_id_str)
+        except ValueError:
             return
 
         alert_data = self._storage.get_by_id(alert_id)
@@ -341,17 +359,29 @@ class EscalationManager:
             )
             return
 
-        updated = self._storage.mark_acknowledged(alert_id, username=username)
-        if updated is None:
-            self._telegram.answer_callback(callback_id, text="Error acknowledging")
-            return
+        if action == "ack":
+            updated = self._storage.mark_acknowledged(alert_id, username=username)
+            if updated is None:
+                self._telegram.answer_callback(callback_id, text="Error acknowledging")
+                return
+            self._telegram.answer_callback(
+                callback_id,
+                text=f"Acknowledged by @{username}",
+            )
+            self._edit_messages_acknowledged(updated, username)
+            print(f"  ESCALATION: Alert #{alert_id} acknowledged by @{username} via button")
 
-        self._telegram.answer_callback(
-            callback_id,
-            text=f"Acknowledged by @{username}",
-        )
-        self._edit_messages_acknowledged(updated, username)
-        print(f"  ESCALATION: Alert #{alert_id} acknowledged by @{username} via button")
+        elif action == "dismiss":
+            updated = self._storage.mark_dismissed(alert_id, username=username)
+            if updated is None:
+                self._telegram.answer_callback(callback_id, text="Error dismissing")
+                return
+            self._telegram.answer_callback(
+                callback_id,
+                text=f"Dismissed by @{username}",
+            )
+            self._edit_messages_dismissed(updated, username)
+            print(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by @{username} via button")
 
     def _handle_command(self, message):
         """Route a bot command to the appropriate handler."""
@@ -601,3 +631,14 @@ class EscalationManager:
             ok = self._telegram.edit_message_caption(chat_id, msg_id, ack_text)
             if not ok:
                 self._telegram.edit_message(chat_id, msg_id, ack_text)
+
+    def _edit_messages_dismissed(self, alert_data, username):
+        """Edit all Telegram messages for an alert to show dismissal."""
+        dismiss_time = datetime.now().strftime("%H:%M")
+        dismiss_text = f"❌ *Dismissed as false alarm* by @{username} at {dismiss_time}"
+
+        message_ids = alert_data.get("telegram_message_ids", {})
+        for chat_id, msg_id in message_ids.items():
+            ok = self._telegram.edit_message_caption(chat_id, msg_id, dismiss_text)
+            if not ok:
+                self._telegram.edit_message(chat_id, msg_id, dismiss_text)
