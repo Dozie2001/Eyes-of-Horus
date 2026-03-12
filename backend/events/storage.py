@@ -46,7 +46,6 @@ class Event(SQLModel, table=True):
     timestamp: datetime = Field(index=True)
     duration_seconds: float
     bbox: list = Field(sa_column=Column(JSON, nullable=False))
-    movement: str
     is_quiet_hours: bool = False
     nearby_objects: list = Field(sa_column=Column(JSON, nullable=False, default=[]))
     snapshot_path: str | None = None
@@ -56,8 +55,8 @@ class Event(SQLModel, table=True):
 
 # All event types (must match events/tracker.py)
 ALL_EVENT_TYPES = [
-    "appeared", "loitering", "moving", "companion",
-    "departed", "objects_changed", "returned",
+    "appeared", "departed", "returned", "companion",
+    "objects_changed", "track_summary",
 ]
 
 
@@ -127,7 +126,7 @@ class EventStorage:
             # Separate known fields from extra
             known_fields = {
                 "track_id", "timestamp", "first_seen", "duration_seconds",
-                "bbox", "movement", "is_quiet_hours", "nearby_objects",
+                "bbox", "is_quiet_hours", "nearby_objects",
             }
             extra = {k: v for k, v in event_data.items() if k not in known_fields}
 
@@ -137,8 +136,7 @@ class EventStorage:
                 timestamp=event_timestamp,
                 duration_seconds=event_data["duration_seconds"],
                 bbox=event_data["bbox"],
-                movement=event_data["movement"],
-                is_quiet_hours=event_data["is_quiet_hours"],
+                is_quiet_hours=event_data.get("is_quiet_hours", False),
                 nearby_objects=event_data.get("nearby_objects", []),
                 snapshot_path=snapshot_path,
                 extra=extra,
@@ -222,7 +220,6 @@ class EventStorage:
             "timestamp": event.timestamp.isoformat(),
             "duration_seconds": event.duration_seconds,
             "bbox": event.bbox,
-            "movement": event.movement,
             "is_quiet_hours": event.is_quiet_hours,
             "nearby_objects": event.nearby_objects,
             "snapshot_path": event.snapshot_path,

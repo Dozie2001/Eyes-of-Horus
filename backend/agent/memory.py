@@ -72,12 +72,12 @@ class SceneMemory:
                     "objects": json.dumps(det.get("nearby_objects", [])),
                 }
 
-                # Add state info from tracker if available
+                # Add measurement info from tracker if available
                 tracked = tracker.tracks.get(track_id)
                 if tracked:
-                    person_data["state"] = tracked.state
                     person_data["duration"] = round(tracked.duration_seconds(), 1)
-                    person_data["movement"] = round(tracked.recent_movement(), 1)
+                    person_data["movement_30f"] = round(tracked.recent_movement(30), 1)
+                    person_data["position_spread"] = round(tracked.position_spread(), 1)
 
                 pipe.hset(self._people_key, str(track_id), json.dumps(person_data))
 

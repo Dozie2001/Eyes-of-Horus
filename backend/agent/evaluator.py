@@ -24,23 +24,24 @@ import time
 from datetime import datetime
 
 from agent.ollama_client import OllamaClient
-from agent.vision import VisionDescriber
+from agent.vision import VisionDescriber, GeminiVisionDescriber
 from agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from agent.decisions import DecisionStorage
 from agent.telegram import TelegramSender
 from events.tracker import (
-    EVENT_APPEARED, EVENT_LOITERING, EVENT_COMPANION,
+    EVENT_APPEARED, EVENT_COMPANION,
     EVENT_OBJECTS_CHANGED, EVENT_RETURNED,
+    EVENT_TRACK_SUMMARY,
 )
 
 
-# Events worth evaluating (high-signal)
+# Events worth evaluating — every summary goes to the AI, it decides everything
 EVAL_EVENTS = [
     EVENT_APPEARED,
-    EVENT_LOITERING,
     EVENT_COMPANION,
     EVENT_OBJECTS_CHANGED,
     EVENT_RETURNED,
+    EVENT_TRACK_SUMMARY,
 ]
 
 
@@ -77,11 +78,19 @@ class EvalAgent:
         )
 
         # Vision describer (snapshot → plain-English description)
-        self._vision = VisionDescriber(
-            model=config.agent.vision_model,
-            host=config.agent.ollama_host,
-            timeout=config.agent.timeout_seconds,
-        )
+        if config.agent.vision_provider == "gemini" and config.secrets.gemini_api_key:
+            self._vision = GeminiVisionDescriber(
+                api_key=config.secrets.gemini_api_key,
+                timeout=config.agent.timeout_seconds,
+            )
+            print(f"  Vision provider: Gemini Flash (cloud)")
+        else:
+            self._vision = VisionDescriber(
+                model=config.agent.vision_model,
+                host=config.agent.ollama_host,
+                timeout=config.agent.timeout_seconds,
+            )
+            print(f"  Vision provider: Ollama ({config.agent.vision_model})")
 
         # Decision storage (same database)
         db_path = str(
@@ -230,15 +239,6 @@ class EvalAgent:
             reason = result["reason"]
             recommendation = result.get("recommendation", "")
 
-            # Hard override: normal hours + no objects → cap at "low"
-            is_quiet = event_data.get("is_quiet_hours", False)
-            has_objects = bool(event_data.get("nearby_objects", []))
-            if not is_quiet and not has_objects:
-                if severity in ("medium", "high"):
-                    severity = "low"
-                    alert = False
-                    reason += " [downgraded: normal hours, no objects]"
-
             # Save decision (always, for auditability)
             decision_id = self._decisions.save_decision(
                 event_type=event_type,
@@ -350,19 +350,22 @@ class EvalAgent:
         """
         Find the snapshot image saved by the pipeline's snapshot handler.
 
-        The snapshot handler saves to:
-            data/events/evt_{YYYYMMDD_HHMMSS}_track{id}_{event_type}.jpg
+        Track summaries overwrite: data/events/summary_track{id}.jpg
+        Lifecycle events: data/events/evt_{YYYYMMDD_HHMMSS}_track{id}_{event_type}.jpg
         """
         try:
-            ts = datetime.fromisoformat(event_data["timestamp"])
-            ts_str = ts.strftime("%Y%m%d_%H%M%S")
             track_id = event_data.get("track_id", 0)
-            filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
-
-            # Try project-root-relative path (same as snapshot handler)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            path = os.path.join(project_root, "data", "events", filename)
 
+            # Track summaries use a per-track overwriting snapshot
+            if event_type == "track_summary":
+                filename = f"summary_track{track_id}.jpg"
+            else:
+                ts = datetime.fromisoformat(event_data["timestamp"])
+                ts_str = ts.strftime("%Y%m%d_%H%M%S")
+                filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
+
+            path = os.path.join(project_root, "data", "events", filename)
             if os.path.exists(path):
                 return path
 

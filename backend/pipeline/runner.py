@@ -135,11 +135,10 @@ class PipelineRunner:
 
             self._tracker = EventTracker(
                 event_bus=bus,
-                loiter_threshold=tracking.loiter_threshold,
                 quiet_hours=tracking.quiet_hours,
-                stationary_threshold=tracking.stationary_threshold,
                 departure_seconds=tracking.departure_seconds,
                 companion_distance=tracking.companion_distance,
+                summary_interval=tracking.summary_interval,
             )
 
             # Subscribe storage to bus (auto-saves events)
@@ -244,8 +243,13 @@ class PipelineRunner:
             ts = datetime.fromisoformat(event_data["timestamp"])
             ts_str = ts.strftime("%Y%m%d_%H%M%S")
 
-            # Save snapshot (still needed for vision model)
-            snap_filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
+            # Track summaries overwrite per-track (one snapshot at a time)
+            # Lifecycle events get unique filenames
+            if event_type == "track_summary":
+                snap_filename = f"summary_track{track_id}.jpg"
+            else:
+                snap_filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
+
             snap_path = f"data/events/{snap_filename}"
 
             if bbox:
@@ -265,27 +269,28 @@ class PipelineRunner:
             )
             cv2.imwrite(snap_path, frame)
 
-            # Save video clip from frame buffer (pre-event footage)
-            if self._frame_buffer and len(self._frame_buffer) > 10:
-                clip_filename = f"evt_{ts_str}_track{track_id}_{event_type}.mp4"
-                clip_path = f"data/events/{clip_filename}"
-                frames = list(self._frame_buffer)
-                threading.Thread(
-                    target=self._write_clip,
-                    args=(clip_path, frames),
-                    daemon=True,
-                ).start()
+            # Save video clip only for lifecycle events (not every summary)
+            if event_type != "track_summary":
+                if self._frame_buffer and len(self._frame_buffer) > 10:
+                    clip_filename = f"evt_{ts_str}_track{track_id}_{event_type}.mp4"
+                    clip_path = f"data/events/{clip_filename}"
+                    frames = list(self._frame_buffer)
+                    threading.Thread(
+                        target=self._write_clip,
+                        args=(clip_path, frames),
+                        daemon=True,
+                    ).start()
 
         from events.tracker import (
-            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
-            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
-            EVENT_RETURNED,
+            EVENT_APPEARED, EVENT_DEPARTED, EVENT_RETURNED,
+            EVENT_COMPANION, EVENT_OBJECTS_CHANGED,
+            EVENT_TRACK_SUMMARY,
         )
 
         all_events = [
-            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
-            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
-            EVENT_RETURNED,
+            EVENT_APPEARED, EVENT_DEPARTED, EVENT_RETURNED,
+            EVENT_COMPANION, EVENT_OBJECTS_CHANGED,
+            EVENT_TRACK_SUMMARY,
         ]
 
         for et in all_events:
@@ -324,15 +329,15 @@ class PipelineRunner:
     def _subscribe_event_logger(self, bus):
         """Log events to console so they're visible during development."""
         from events.tracker import (
-            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
-            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
-            EVENT_RETURNED,
+            EVENT_APPEARED, EVENT_DEPARTED, EVENT_RETURNED,
+            EVENT_COMPANION, EVENT_OBJECTS_CHANGED,
+            EVENT_TRACK_SUMMARY,
         )
 
         all_events = [
-            EVENT_APPEARED, EVENT_LOITERING, EVENT_MOVING,
-            EVENT_COMPANION, EVENT_DEPARTED, EVENT_OBJECTS_CHANGED,
-            EVENT_RETURNED,
+            EVENT_APPEARED, EVENT_DEPARTED, EVENT_RETURNED,
+            EVENT_COMPANION, EVENT_OBJECTS_CHANGED,
+            EVENT_TRACK_SUMMARY,
         ]
 
         for et in all_events:
@@ -340,11 +345,13 @@ class PipelineRunner:
                 def handler(event_data):
                     track_id = event_data.get("track_id", "?")
                     ts = event_data.get("timestamp", "")
-                    extra = ""
-                    if event_data.get("duration"):
-                        extra = f" | duration={event_data['duration']}s"
-                    if event_data.get("nearby_objects"):
-                        extra += f" | objects={event_data['nearby_objects']}"
+                    dur = event_data.get("duration_seconds", 0)
+                    mvmt = event_data.get("avg_movement_30f", 0)
+                    spread = event_data.get("position_spread", 0)
+                    objects = event_data.get("nearby_objects", [])
+                    extra = f" | dur={dur}s | mvmt={mvmt} | spread={spread}"
+                    if objects:
+                        extra += f" | objects={objects}"
                     print(f"  EVENT: {event_type.upper()} | Track #{track_id} | {ts}{extra}")
                 return handler
             bus.on(et, make_handler(et))

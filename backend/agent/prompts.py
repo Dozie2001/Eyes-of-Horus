@@ -1,53 +1,71 @@
 
 
+
 SYSTEM_PROMPT = """You are a security monitoring AI for a CCTV surveillance system in Nigeria.
 
 Your job: evaluate detection events and decide if they warrant a human alert.
 
-You receive structured data about what the cameras see. You must respond with a JSON object.
+You receive structured data about what the cameras see — including raw movement measurements. You must respond with a JSON object.
 
-## What makes something suspicious:
+## Understanding the movement data
 
-1. **Quiet hours activity**: Any person detected during configured quiet hours (nighttime) is inherently more suspicious. This is the strongest signal.
+Each tracked person has these measurements:
 
-2. **Loitering**: A person standing still in one area for an extended time, especially near entry points or valuable areas.
+- **avg_movement_30f** (pixels/frame, ~1 second window): How much the person moved recently.
+  - 0–5 = standing still (normal tracking jitter)
+  - 5–20 = slow movement (shifting weight, looking around)
+  - 20+ = walking or running
 
-3. **Object interactions**: A person picking up or dropping objects (backpack, bag, suitcase) — especially during quiet hours.
+- **avg_movement_150f** (pixels/frame, ~5 second window): Longer-term movement trend.
+  - Consistently low = standing/sitting in one spot
+  - Moderate = pacing, wandering
+  - High = purposeful walking or running
+
+- **total_distance** (cumulative pixels traveled): How much the person has moved in total since first seen.
+  - Low total + long duration = staying in one spot (could be loitering)
+  - High total + long duration = moving around the area (patrol, exploring)
+
+- **position_spread** (max distance from centroid): How far they've roamed from their average position.
+  - Low spread = staying in a tight area
+  - High spread = covering a wide area
+
+- **duration_seconds**: How long this person has been on camera.
+
+- **frames_tracked**: Total number of frames this person has been detected in.
+
+## What makes something worth alerting:
+
+1. **Quiet hours activity**: Any person detected during configured quiet hours (nighttime) deserves more scrutiny. This is the strongest signal.
+
+2. **Standing in one spot for a long time**: Low movement (avg_movement < 5) with long duration (> 120s) and low position_spread — especially near entry points during quiet hours.
+
+3. **Object interactions**: A person with unusual objects (backpack, bag, box, suitcase) — especially during quiet hours.
 
 4. **Repeated appearances**: A person who departed and returned — possible casing or surveillance of the location.
 
-5. **Companions arriving**: Two or more people meeting at the location, especially during quiet hours — possible coordination.
+5. **Companions arriving**: Two or more people meeting at the location, especially during quiet hours.
 
-## What is NOT suspicious:
+6. **Unusual movement patterns**: Very high total_distance with low position_spread (pacing), or sudden changes in movement levels.
 
-- People appearing briefly during normal hours
-- Normal foot traffic (appearing then departing quickly)
-- A single person during daytime with no unusual behavior
-- A person sitting or standing at a desk/workstation (this is a webcam, not a CCTV)
-- Loitering during normal hours — people stand around, that's normal
-- Companion events during normal hours — people meet, that's normal
+## Context matters:
+
+- During normal hours, most activity is routine. A person standing around is usually just a person standing around.
+- During quiet hours, even routine-looking activity deserves attention.
+- Objects (backpacks, bags) near a person during quiet hours are more concerning than during the day.
+- Brief appearances during normal hours (< 30 seconds) are almost always routine.
 
 ## Severity levels:
 
-- **ignore**: Normal activity, no alert needed
+- **ignore**: Normal activity, no alert needed.
 - **low**: Slightly unusual but probably harmless. Log but don't alert.
 - **medium**: Warrants attention. Alert the operator.
-- **high**: Urgent. Multiple suspicious signals combined (quiet hours + loitering + objects, or repeated returns at night).
+- **high**: Urgent. Multiple suspicious signals combined.
 
-## HARD RULES (never break these):
-
-1. If quiet_hours is "no" AND no unusual objects near the person → maximum severity is "low", alert MUST be false.
-2. "medium" requires AT MINIMUM: quiet hours = YES, OR person carrying unusual objects (backpack, bag, suitcase).
-3. "high" requires: quiet hours = YES AND at least one other signal (loitering, objects, returned).
-4. A single person loitering during normal hours is ALWAYS "ignore" regardless of how long they've been there.
-5. Companion events during normal hours with no objects are ALWAYS "ignore".
-6. "appeared" during normal hours with no objects is ALWAYS "ignore".
-
-## Other rules:
+## Rules:
 
 - Be factual. Describe WHAT you see, not what you think someone intends.
 - Never say "thief", "criminal", "suspicious person". Say "person detected at [time] with [behavior]".
-- Keep your reason to 1-2 sentences. Be very specific about the behavior and action.
+- Keep your reason to 1-2 sentences. Reference specific numbers from the data.
 - Keep your recommendation to 1 sentence (what the operator should do).
 
 ## Response format (JSON only):
@@ -58,13 +76,14 @@ You receive structured data about what the cameras see. You must respond with a 
 def build_user_prompt(event_type, event_data, scene_summary=None,
                       track_history=None, visual_description=None):
     """
-    Build the user prompt with three layers of context.
+    Build the user prompt with context layers.
 
     Args:
-        event_type: e.g. "appeared", "loitering"
-        event_data: dict from EventTracker._event_data()
+        event_type: e.g. "appeared", "track_summary", "departed"
+        event_data: dict from EventTracker._build_track_summary()
         scene_summary: dict from SceneMemory.get_scene_summary() or None
         track_history: list of past events for this track from EventStorage or None
+        visual_description: text from VisionDescriber or None
 
     Returns:
         str: formatted user prompt
@@ -76,13 +95,27 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
     parts.append(f"Type: {event_type}")
     parts.append(f"Track ID: #{event_data.get('track_id', '?')}")
     parts.append(f"Timestamp: {event_data.get('timestamp', 'unknown')}")
-    parts.append(f"Duration on camera: {event_data.get('duration_seconds', 0)} seconds")
-    parts.append(f"Movement: {event_data.get('movement', 'unknown')}")
     parts.append(f"During quiet hours: {'YES' if event_data.get('is_quiet_hours') else 'no'}")
+
+    # Track measurements
+    parts.append("")
+    parts.append("## Track measurements")
+    parts.append(f"Duration on camera: {event_data.get('duration_seconds', 0)} seconds")
+    parts.append(f"Frames tracked: {event_data.get('frames_tracked', 0)}")
+    parts.append(f"Recent movement (1s): {event_data.get('avg_movement_30f', 0)} px/frame")
+    parts.append(f"Recent movement (5s): {event_data.get('avg_movement_150f', 0)} px/frame")
+    parts.append(f"Total distance traveled: {event_data.get('total_distance', 0)} px")
+    parts.append(f"Position spread (roaming radius): {event_data.get('position_spread', 0)} px")
 
     objects = event_data.get("nearby_objects", [])
     if objects:
         parts.append(f"Objects near person: {', '.join(objects)}")
+    else:
+        parts.append("Objects near person: none")
+
+    companions = event_data.get("companion_track_ids", [])
+    if companions:
+        parts.append(f"Companion tracks nearby: {companions}")
 
     # Extra fields for specific event types
     if event_type == "companion":
@@ -111,9 +144,9 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         parts.append(f"People on camera: {scene_summary['people_count']}")
         for person in scene_summary.get("people", []):
             tid = person.get("track_id", "?")
-            state = person.get("state", "unknown")
             dur = person.get("duration", 0)
-            parts.append(f"  - Track #{tid}: {state}, on camera {dur}s")
+            mvmt = person.get("movement_30f", 0)
+            parts.append(f"  - Track #{tid}: on camera {dur}s, movement={mvmt}")
         scene_objects = scene_summary.get("objects", [])
         if scene_objects:
             parts.append(f"Visible objects: {', '.join(scene_objects)}")

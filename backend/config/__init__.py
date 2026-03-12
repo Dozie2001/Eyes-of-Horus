@@ -29,6 +29,7 @@ class Secrets(BaseModel):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
     openclaw_token: str = ""
     # Camera credentials are dynamic — accessed via get_camera_credential()
 
@@ -72,11 +73,12 @@ class SiteConfig(BaseModel):
 
 class TrackingConfig(BaseModel):
     """EventTracker thresholds — can be overridden per camera."""
-    loiter_threshold: float = 300.0
+    model_config = ConfigDict(extra="ignore")  # ignore old loiter_threshold, stationary_threshold
+
     quiet_hours: Optional[dict] = None
-    stationary_threshold: float = 5.0
     departure_seconds: float = 3.0
     companion_distance: float = 200.0
+    summary_interval: float = 60.0  # seconds between periodic track summaries
 
 
 class CameraConfig(BaseModel):
@@ -159,9 +161,10 @@ class AgentConfig(BaseModel):
     """AI evaluation agent settings."""
     enabled: bool = True
     model: str = "qwen2.5:7b"
-    vision_model: str = "qwen2.5vl:7b"  # vision LLM for snapshot descriptions
+    vision_model: str = "qwen2.5vl:7b"  # local vision LLM (when vision_provider=ollama)
+    vision_provider: str = "ollama"  # "ollama" (local) or "gemini" (cloud, free tier)
     ollama_host: str = "http://localhost:11434"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 60.0
     cooldown_seconds: float = 120.0  # min seconds between alerts for same track
 
 
@@ -313,6 +316,7 @@ def get_config(
         telegram_bot_token=env.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
         anthropic_api_key=env.get("ANTHROPIC_API_KEY", ""),
+        gemini_api_key=env.get("GEMINI_API_KEY", ""),
         openclaw_token=env.get("OPENCLAW_TOKEN", ""),
     )
     secrets._env = env
