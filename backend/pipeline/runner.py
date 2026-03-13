@@ -323,9 +323,15 @@ class PipelineRunner:
             bus.on(et, make_handler(et))
 
     def _write_clip(self, path, frames):
-        """Write buffered frames to an MP4 video file. Runs in background thread."""
+        """Write buffered frames to an MP4 video file. Runs in background thread.
+
+        Writes to a .tmp file first, then atomically renames to .mp4.
+        This prevents the evaluator from reading an incomplete file
+        (which causes 'moov atom not found' errors).
+        """
         import cv2
 
+        tmp_path = path + ".tmp"
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
 
@@ -336,16 +342,20 @@ class PipelineRunner:
             # Get actual frame size (may differ from camera if resized)
             h, w = frames[0].shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(path, fourcc, output_fps, (w, h))
+            writer = cv2.VideoWriter(tmp_path, fourcc, output_fps, (w, h))
 
             for i, frame in enumerate(frames):
                 if i % step == 0:
                     writer.write(frame)
 
             writer.release()
+            os.rename(tmp_path, path)
             print(f"  CLIP: Saved {path} ({len(frames)} frames)")
         except Exception as e:
             print(f"  CLIP: Failed to write {path}: {e}")
+            # Clean up incomplete temp file
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def _subscribe_event_logger(self, bus):
         """Log events to console so they're visible during development."""
