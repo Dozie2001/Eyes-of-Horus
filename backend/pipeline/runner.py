@@ -41,10 +41,12 @@ class PipelineRunner:
     - FastAPI only reads the database, pipeline only writes
     """
 
-    def __init__(self, config, escalation=None, camera_config=None):
+    def __init__(self, config, escalation=None, camera_config=None,
+                 profile_storage=None):
         self.config = config
         self._escalation = escalation
         self._camera_config = camera_config
+        self._profile_storage = profile_storage
         self.camera_id = camera_config.name if camera_config else "cam1"
         self.running = False
         self._thread = None
@@ -162,6 +164,11 @@ class PipelineRunner:
             self._subscribe_event_logger(bus)
 
             # Start AI evaluation agent (if enabled and Ollama is reachable)
+            # Subscribe SceneMemory to departure events (for cross-camera correlation)
+            if scene_memory is not None:
+                from events.tracker import EVENT_DEPARTED
+                bus.on(EVENT_DEPARTED, lambda data: scene_memory.record_departure(data))
+
             self._eval_agent = None
             if self.config.agent.enabled:
                 redis_client = r if self.config.redis.enabled and scene_memory else None
@@ -172,6 +179,7 @@ class PipelineRunner:
                     redis_client=redis_client,
                     escalation=self._escalation,
                     camera_id=self.camera_id,
+                    profile_storage=self._profile_storage,
                 )
                 agent.subscribe(bus)
                 agent.start()

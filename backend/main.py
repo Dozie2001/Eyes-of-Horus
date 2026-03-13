@@ -25,6 +25,7 @@ from agent.decisions import DecisionStorage
 from agent.telegram import TelegramSender
 from agent.escalation import EscalationManager
 from agent.role_storage import RoleStorage
+from agent.profile_storage import CameraProfileStorage
 from pipeline.runner import PipelineRunner
 
 
@@ -47,6 +48,9 @@ async def lifespan(app: FastAPI):
     role_storage = RoleStorage(db_path)
     app.state.role_storage = role_storage
 
+    profile_storage = CameraProfileStorage(db_path)
+    app.state.profile_storage = profile_storage
+
     escalation = None
     if config.escalation.enabled:
         if config.secrets.telegram_chat_id:
@@ -68,7 +72,9 @@ async def lifespan(app: FastAPI):
     runners = {}
     enabled_cameras = [c for c in config.cameras if c.enabled]
     for cam_cfg in enabled_cameras:
-        runner = PipelineRunner(config, escalation=escalation, camera_config=cam_cfg)
+        runner = PipelineRunner(config, escalation=escalation,
+                                camera_config=cam_cfg,
+                                profile_storage=profile_storage)
         runner.start(storage)
         runners[cam_cfg.name] = runner
 
@@ -264,6 +270,47 @@ def set_quiet_hours(body: QuietHoursUpdate):
     if body.start is None or body.end is None:
         return {"start": None, "end": None, "active": False}
     return {"start": body.start, "end": body.end, "active": True}
+
+
+# --- Camera profile endpoints ---
+
+class CameraProfileUpdate(BaseModel):
+    description: str = ""
+    schedule: dict | None = None  # {"weekday": {"start": "08:00", "end": "18:00"}, ...}
+
+
+@app.get("/cameras/profiles")
+def list_camera_profiles():
+    """List all camera profiles."""
+    return app.state.profile_storage.get_all_profiles()
+
+
+@app.get("/cameras/profiles/{camera_id}")
+def get_camera_profile(camera_id: str):
+    """Get profile for a specific camera."""
+    profile = app.state.profile_storage.get_profile(camera_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No profile for camera '{camera_id}'")
+    return profile
+
+
+@app.put("/cameras/profiles/{camera_id}")
+def upsert_camera_profile(camera_id: str, body: CameraProfileUpdate):
+    """Create or update a camera profile."""
+    return app.state.profile_storage.upsert_profile(
+        camera_id=camera_id,
+        description=body.description,
+        schedule=body.schedule,
+    )
+
+
+@app.delete("/cameras/profiles/{camera_id}")
+def delete_camera_profile(camera_id: str):
+    """Delete a camera profile."""
+    deleted = app.state.profile_storage.delete_profile(camera_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No profile for camera '{camera_id}'")
+    return {"deleted": camera_id}
 
 
 # --- Role management endpoints ---

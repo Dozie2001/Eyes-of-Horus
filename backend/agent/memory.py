@@ -46,6 +46,7 @@ class SceneMemory:
         self._people_key = f"stang:scene:{camera_id}:people"
         self._stats_key = f"stang:scene:{camera_id}:stats"
         self._objects_key = f"stang:scene:{camera_id}:objects"
+        self._departures_key = f"stang:scene:{camera_id}:departures"
 
     def update_scene(self, detections, tracker):
         """
@@ -109,6 +110,34 @@ class SceneMemory:
         except Exception as e:
             # Redis down? Don't crash the pipeline
             print(f"Scene memory update failed: {e}")
+
+    def record_departure(self, event_data):
+        """
+        Record a departure event for cross-camera temporal correlation.
+
+        Called when a person leaves this camera's view. Stored in Redis
+        with 60s TTL so other cameras can see "someone just left camera X".
+
+        Args:
+            event_data: dict from EventTracker departed event
+        """
+        try:
+            track_id = event_data.get("track_id", 0)
+            departure_info = {
+                "track_id": track_id,
+                "timestamp": event_data.get("timestamp", ""),
+                "duration": event_data.get("duration_seconds", 0),
+                "objects": event_data.get("nearby_objects", []),
+            }
+            self.redis.hset(
+                self._departures_key,
+                str(track_id),
+                json.dumps(departure_info),
+            )
+            self.redis.expire(self._departures_key, 60)
+        except Exception as e:
+            # Redis down? Don't crash the pipeline
+            print(f"Scene memory departure record failed: {e}")
 
     def get_scene_summary(self):
         """
@@ -186,12 +215,36 @@ class SceneMemory:
                 objects_raw = self.redis.hgetall(f"stang:scene:{cam_id}:objects")
                 objects = list(objects_raw.values()) if objects_raw else []
 
+                # Read recent departures for this camera
+                departures_raw = self.redis.hgetall(f"stang:scene:{cam_id}:departures")
+                recent_departures = []
+                if departures_raw:
+                    now = datetime.now()
+                    for _tid, dep_str in departures_raw.items():
+                        try:
+                            dep = json.loads(dep_str)
+                            dep_ts = dep.get("timestamp", "")
+                            if dep_ts:
+                                dep_time = datetime.fromisoformat(dep_ts)
+                                seconds_ago = int((now - dep_time).total_seconds())
+                            else:
+                                seconds_ago = -1
+                            recent_departures.append({
+                                "track_id": dep.get("track_id", 0),
+                                "seconds_ago": seconds_ago,
+                                "duration": dep.get("duration", 0),
+                                "objects": dep.get("objects", []),
+                            })
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            continue
+
                 summaries.append({
                     "camera_id": cam_id,
                     "people_count": int(stats.get("people_count", 0)),
                     "active_tracks": int(stats.get("active_tracks", 0)),
                     "objects": objects,
                     "last_update": stats.get("last_updated", ""),
+                    "recent_departures": recent_departures,
                 })
 
             return summaries

@@ -75,7 +75,8 @@ Each tracked person has these measurements:
 
 def build_user_prompt(event_type, event_data, scene_summary=None,
                       track_history=None, visual_description=None,
-                      cross_camera_context=None, feedback_context=None):
+                      cross_camera_context=None, feedback_context=None,
+                      camera_profile=None):
     """
     Build the user prompt with context layers.
 
@@ -86,11 +87,54 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         track_history: list of past events for this track from EventStorage or None
         visual_description: text from VisionDescriber or None
         feedback_context: dict from EvalAgent._get_feedback_context() or None
+        camera_profile: dict from CameraProfileStorage.get_profile() or None
 
     Returns:
         str: formatted user prompt
     """
     parts = []
+
+    # Layer 0: Camera context (sets the scene before event data)
+    if camera_profile is not None:
+        parts.append("## Camera context")
+        parts.append(f"Camera: {camera_profile['camera_id']}")
+        if camera_profile.get("description"):
+            parts.append(f"Description: {camera_profile['description']}")
+
+        schedule = camera_profile.get("schedule")
+        if schedule:
+            from datetime import datetime
+            now = datetime.now()
+            day_of_week = now.weekday()
+            is_weekend = day_of_week >= 5
+            day_name = now.strftime("%A")
+
+            if is_weekend:
+                hours = schedule.get("weekend")
+            else:
+                hours = schedule.get("weekday")
+
+            if hours and hours.get("start") and hours.get("end"):
+                parts.append(f"Normal hours today ({day_name}): {hours['start']} - {hours['end']}")
+                # Check if current time is within normal hours
+                from datetime import time as dt_time
+                start = dt_time.fromisoformat(hours["start"])
+                end = dt_time.fromisoformat(hours["end"])
+                current = now.time()
+                if start <= end:
+                    within = start <= current <= end
+                else:
+                    within = current >= start or current <= end
+                if within:
+                    parts.append("Current time is within normal hours.")
+                else:
+                    parts.append("Current time is OUTSIDE normal hours.")
+            else:
+                day_type = "weekends" if is_weekend else "weekdays"
+                parts.append(f"No defined schedule for {day_type}.")
+        else:
+            parts.append("No defined schedule for this camera.")
+        parts.append("")
 
     # Layer 1: The triggering event
     parts.append("## Event to evaluate")
@@ -169,6 +213,15 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
                 parts.append(f"- {cam_id}: {pcount} people{obj_str} (updated: {last_update})")
             else:
                 parts.append(f"- {cam_id}: empty (updated: {last_update})")
+
+            # Recent departures from this camera
+            departures = cam.get("recent_departures", [])
+            for dep in departures:
+                secs_ago = dep.get("seconds_ago", "?")
+                dur = dep.get("duration", 0)
+                dep_objects = dep.get("objects", [])
+                obj_part = f", had {', '.join(dep_objects)}" if dep_objects else ""
+                parts.append(f"  Recent departure: Track #{dep.get('track_id', '?')} left {secs_ago}s ago (was on camera {dur}s{obj_part})")
 
     # Layer 5: Track history
     parts.append("")

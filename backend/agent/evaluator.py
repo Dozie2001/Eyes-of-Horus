@@ -60,7 +60,7 @@ class EvalAgent:
     """
 
     def __init__(self, config, storage, scene_memory=None, redis_client=None,
-                 escalation=None, camera_id="cam1"):
+                 escalation=None, camera_id="cam1", profile_storage=None):
         """
         Args:
             config: StangWatchConfig
@@ -69,12 +69,14 @@ class EvalAgent:
             redis_client: Redis connection for cooldown tracking (or None)
             escalation: EscalationManager instance (or None for simple sends)
             camera_id: identifier for this camera
+            profile_storage: CameraProfileStorage for per-camera context (or None)
         """
         self.config = config
         self.storage = storage
         self.scene_memory = scene_memory
         self.redis = redis_client
         self.camera_id = camera_id
+        self._profile_storage = profile_storage
 
         # Ollama text client (reasoning + decisions)
         self._ollama = OllamaClient(
@@ -242,11 +244,16 @@ class EvalAgent:
 
             feedback_context = self._get_feedback_context(event_type)
 
+            camera_profile = None
+            if self._profile_storage:
+                camera_profile = self._profile_storage.get_profile(self.camera_id)
+
             user_prompt = build_user_prompt(
                 event_type, event_data, scene_summary, track_history,
                 visual_description=visual_description,
                 cross_camera_context=cross_camera,
                 feedback_context=feedback_context,
+                camera_profile=camera_profile,
             )
 
             # Step 4: Text model reasons — decides severity
