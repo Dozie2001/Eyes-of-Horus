@@ -128,7 +128,7 @@ class EventTracker:
     """
 
     def __init__(self, event_bus, quiet_hours=None, departure_seconds=3.0,
-                 companion_distance=200, summary_interval=60.0):
+                 companion_distance=200, summary_interval=60.0, camera_id="cam1"):
         """
         Args:
             event_bus: pyee EventEmitter instance
@@ -136,8 +136,10 @@ class EventTracker:
             departure_seconds: seconds without seeing a person before marking departed
             companion_distance: max pixels between two people to trigger COMPANION
             summary_interval: seconds between periodic track summaries
+            camera_id: identifier for this camera (included in all events)
         """
         self.bus = event_bus
+        self.camera_id = camera_id
         self.quiet_hours = quiet_hours
         self.departure_seconds = departure_seconds
         self.companion_distance = companion_distance
@@ -284,6 +286,7 @@ class EventTracker:
 
         return {
             "track_id": person.track_id,
+            "camera_id": self.camera_id,
             "timestamp": timestamp.isoformat(),
             "first_seen": person.first_seen.isoformat(),
             "duration_seconds": round(person.duration_seconds(), 1),

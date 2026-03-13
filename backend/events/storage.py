@@ -31,9 +31,10 @@ from sqlmodel import SQLModel, Field, Session, create_engine, select
 # --- Models ---
 
 class Track(SQLModel, table=True):
-    """One row per tracked person."""
+    """One row per tracked person (scoped by camera)."""
     id: int | None = Field(default=None, primary_key=True)
-    bytetrack_id: int = Field(unique=True, index=True)
+    camera_id: str = Field(default="cam1", index=True)
+    bytetrack_id: int = Field(index=True)
     first_seen: datetime
     last_seen: datetime
 
@@ -41,6 +42,7 @@ class Track(SQLModel, table=True):
 class Event(SQLModel, table=True):
     """One row per detection event."""
     id: int | None = Field(default=None, primary_key=True)
+    camera_id: str = Field(default="cam1", index=True)
     event_type: str = Field(index=True)
     track_id: int = Field(foreign_key="track.id", index=True)
     timestamp: datetime = Field(index=True)
@@ -103,17 +105,21 @@ class EventStorage:
             int: the event row ID
         """
         bytetrack_id = event_data["track_id"]
+        camera_id = event_data.get("camera_id", "cam1")
         event_timestamp = datetime.fromisoformat(event_data["timestamp"])
         first_seen = datetime.fromisoformat(event_data["first_seen"])
 
         with Session(self.engine) as session:
-            # Get or create track
+            # Get or create track (scoped by camera_id + bytetrack_id)
             track = session.exec(
-                select(Track).where(Track.bytetrack_id == bytetrack_id)
+                select(Track)
+                .where(Track.camera_id == camera_id)
+                .where(Track.bytetrack_id == bytetrack_id)
             ).first()
 
             if track is None:
                 track = Track(
+                    camera_id=camera_id,
                     bytetrack_id=bytetrack_id,
                     first_seen=first_seen,
                     last_seen=event_timestamp,
@@ -125,12 +131,13 @@ class EventStorage:
 
             # Separate known fields from extra
             known_fields = {
-                "track_id", "timestamp", "first_seen", "duration_seconds",
-                "bbox", "is_quiet_hours", "nearby_objects",
+                "track_id", "camera_id", "timestamp", "first_seen",
+                "duration_seconds", "bbox", "is_quiet_hours", "nearby_objects",
             }
             extra = {k: v for k, v in event_data.items() if k not in known_fields}
 
             event = Event(
+                camera_id=camera_id,
                 event_type=event_type,
                 track_id=track.id,
                 timestamp=event_timestamp,
@@ -161,32 +168,36 @@ class EventStorage:
 
     # --- Query methods ---
 
-    def get_recent(self, limit=50):
+    def get_recent(self, limit=50, camera_id=None):
         """Get the most recent events, newest first."""
         with Session(self.engine) as session:
+            stmt = select(Event)
+            if camera_id:
+                stmt = stmt.where(Event.camera_id == camera_id)
             events = session.exec(
-                select(Event).order_by(Event.timestamp.desc()).limit(limit)
+                stmt.order_by(Event.timestamp.desc()).limit(limit)
             ).all()
             return [self._event_to_dict(e) for e in events]
 
-    def get_by_type(self, event_type, limit=50):
+    def get_by_type(self, event_type, limit=50, camera_id=None):
         """Get recent events of a specific type."""
         with Session(self.engine) as session:
+            stmt = select(Event).where(Event.event_type == event_type)
+            if camera_id:
+                stmt = stmt.where(Event.camera_id == camera_id)
             events = session.exec(
-                select(Event)
-                .where(Event.event_type == event_type)
-                .order_by(Event.timestamp.desc())
-                .limit(limit)
+                stmt.order_by(Event.timestamp.desc()).limit(limit)
             ).all()
             return [self._event_to_dict(e) for e in events]
 
-    def get_by_track(self, bytetrack_id, limit=50):
+    def get_by_track(self, bytetrack_id, limit=50, camera_id=None):
         """Get all events for a specific tracked person (by ByteTrack ID)."""
         with Session(self.engine) as session:
             # Look up the track first
-            track = session.exec(
-                select(Track).where(Track.bytetrack_id == bytetrack_id)
-            ).first()
+            stmt = select(Track).where(Track.bytetrack_id == bytetrack_id)
+            if camera_id:
+                stmt = stmt.where(Track.camera_id == camera_id)
+            track = session.exec(stmt).first()
 
             if track is None:
                 return []
@@ -199,14 +210,15 @@ class EventStorage:
             ).all()
             return [self._event_to_dict(e) for e in events]
 
-    def count_by_type(self):
+    def count_by_type(self, camera_id=None):
         """Get event counts grouped by type. Useful for dashboard summary."""
         with Session(self.engine) as session:
             results = {}
             for et in ALL_EVENT_TYPES:
-                count = len(session.exec(
-                    select(Event).where(Event.event_type == et)
-                ).all())
+                stmt = select(Event).where(Event.event_type == et)
+                if camera_id:
+                    stmt = stmt.where(Event.camera_id == camera_id)
+                count = len(session.exec(stmt).all())
                 if count > 0:
                     results[et] = count
             return results
@@ -215,6 +227,7 @@ class EventStorage:
         """Convert an Event model to a plain dict."""
         return {
             "id": event.id,
+            "camera_id": event.camera_id,
             "event_type": event.event_type,
             "track_id": event.track_id,
             "timestamp": event.timestamp.isoformat(),

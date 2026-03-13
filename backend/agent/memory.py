@@ -151,3 +151,51 @@ class SceneMemory:
                 "stats": {},
                 "error": str(e),
             }
+
+    def get_all_cameras_summary(self):
+        """
+        Get scene summaries from ALL cameras (for cross-camera context).
+
+        Scans Redis for all camera stats keys, reads each camera's summary,
+        and returns a list (excluding this camera's own data).
+
+        Returns:
+            list of dicts: [{camera_id, people_count, objects, last_update}, ...]
+        """
+        try:
+            # Find all camera stats keys
+            keys = self.redis.keys("stang:scene:*:stats")
+            summaries = []
+
+            for key in keys:
+                # Extract camera_id from key: stang:scene:{camera_id}:stats
+                parts = key.split(":")
+                if len(parts) < 4:
+                    continue
+                cam_id = parts[2]
+
+                # Skip our own camera
+                if cam_id == self.camera_id:
+                    continue
+
+                stats = self.redis.hgetall(f"stang:scene:{cam_id}:stats")
+                if not stats:
+                    continue
+
+                # Read objects for this camera
+                objects_raw = self.redis.hgetall(f"stang:scene:{cam_id}:objects")
+                objects = list(objects_raw.values()) if objects_raw else []
+
+                summaries.append({
+                    "camera_id": cam_id,
+                    "people_count": int(stats.get("people_count", 0)),
+                    "active_tracks": int(stats.get("active_tracks", 0)),
+                    "objects": objects,
+                    "last_update": stats.get("last_updated", ""),
+                })
+
+            return summaries
+
+        except Exception as e:
+            print(f"Cross-camera summary failed: {e}")
+            return []

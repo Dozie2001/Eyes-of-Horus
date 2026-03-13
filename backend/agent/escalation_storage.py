@@ -22,6 +22,7 @@ class EscalationAlert(SQLModel, table=True):
     __tablename__ = "escalation_alert"
 
     id: int | None = Field(default=None, primary_key=True)
+    camera_id: str = Field(default="cam1", index=True)
     decision_id: int = Field(index=True)        # links to AgentDecision.id
     event_type: str
     track_id: int
@@ -77,6 +78,7 @@ class EscalationStorage:
             migrations = [
                 ("outcome", "TEXT NOT NULL DEFAULT 'unresolved'"),
                 ("dismissed_by", "TEXT NOT NULL DEFAULT ''"),
+                ("camera_id", "TEXT NOT NULL DEFAULT 'cam1'"),
             ]
             for col_name, col_def in migrations:
                 if col_name not in existing:
@@ -85,7 +87,7 @@ class EscalationStorage:
 
     def save_alert(self, decision_id, event_type, track_id, severity,
                    max_level, snapshot_path="", video_path="",
-                   next_escalation_at=None):
+                   next_escalation_at=None, camera_id="cam1"):
         """
         Save a new escalation alert as pending.
 
@@ -93,6 +95,7 @@ class EscalationStorage:
             int: the alert row ID
         """
         alert = EscalationAlert(
+            camera_id=camera_id,
             decision_id=decision_id,
             event_type=event_type,
             track_id=track_id,
@@ -189,24 +192,25 @@ class EscalationStorage:
             session.add(alert)
             session.commit()
 
-    def get_pending(self, limit=50):
+    def get_pending(self, limit=50, camera_id=None):
         """Get currently pending (unacknowledged) alerts."""
         with Session(self.engine) as session:
+            stmt = select(EscalationAlert).where(EscalationAlert.status == "pending")
+            if camera_id:
+                stmt = stmt.where(EscalationAlert.camera_id == camera_id)
             alerts = session.exec(
-                select(EscalationAlert)
-                .where(EscalationAlert.status == "pending")
-                .order_by(EscalationAlert.created_at.desc())
-                .limit(limit)
+                stmt.order_by(EscalationAlert.created_at.desc()).limit(limit)
             ).all()
             return [self._to_dict(a) for a in alerts]
 
-    def get_recent(self, limit=50):
+    def get_recent(self, limit=50, camera_id=None):
         """Get all escalation alerts, newest first."""
         with Session(self.engine) as session:
+            stmt = select(EscalationAlert)
+            if camera_id:
+                stmt = stmt.where(EscalationAlert.camera_id == camera_id)
             alerts = session.exec(
-                select(EscalationAlert)
-                .order_by(EscalationAlert.created_at.desc())
-                .limit(limit)
+                stmt.order_by(EscalationAlert.created_at.desc()).limit(limit)
             ).all()
             return [self._to_dict(a) for a in alerts]
 
@@ -218,15 +222,19 @@ class EscalationStorage:
                 return None
             return self._to_dict(alert)
 
-    def get_outcome_stats(self, days=30):
+    def get_outcome_stats(self, days=30, camera_id=None):
         """Get alert outcome statistics for the last N days."""
         cutoff = datetime.now() - timedelta(days=days)
+        cam_filter = " AND camera_id = :camera_id" if camera_id else ""
+        params = {"cutoff": cutoff.isoformat()}
+        if camera_id:
+            params["camera_id"] = camera_id
         with self.engine.connect() as conn:
             # Overall totals
             rows = conn.execute(text(
                 "SELECT outcome, COUNT(*) as cnt FROM escalation_alert "
-                "WHERE created_at >= :cutoff GROUP BY outcome"
-            ), {"cutoff": cutoff.isoformat()}).fetchall()
+                f"WHERE created_at >= :cutoff{cam_filter} GROUP BY outcome"
+            ), params).fetchall()
 
             totals = {"unresolved": 0, "true_alert": 0, "false_alarm": 0}
             for outcome, cnt in rows:
@@ -237,8 +245,8 @@ class EscalationStorage:
             # By event_type
             et_rows = conn.execute(text(
                 "SELECT event_type, outcome, COUNT(*) as cnt FROM escalation_alert "
-                "WHERE created_at >= :cutoff GROUP BY event_type, outcome"
-            ), {"cutoff": cutoff.isoformat()}).fetchall()
+                f"WHERE created_at >= :cutoff{cam_filter} GROUP BY event_type, outcome"
+            ), params).fetchall()
 
             by_event_type = {}
             for event_type, outcome, cnt in et_rows:
@@ -260,8 +268,8 @@ class EscalationStorage:
             # By severity
             sev_rows = conn.execute(text(
                 "SELECT severity, outcome, COUNT(*) as cnt FROM escalation_alert "
-                "WHERE created_at >= :cutoff GROUP BY severity, outcome"
-            ), {"cutoff": cutoff.isoformat()}).fetchall()
+                f"WHERE created_at >= :cutoff{cam_filter} GROUP BY severity, outcome"
+            ), params).fetchall()
 
             by_severity = {}
             for severity, outcome, cnt in sev_rows:
@@ -292,10 +300,60 @@ class EscalationStorage:
                 "by_severity": by_severity,
             }
 
+    def get_decisions_with_outcomes(self, days=30, camera_id=None, limit=200):
+        """
+        JOIN agent_decision + escalation_alert to return decisions enriched
+        with their escalation outcome (true_alert / false_alarm / unresolved).
+
+        Returns list of dicts with decision fields + outcome fields.
+        """
+        cutoff = datetime.now() - timedelta(days=days)
+        cam_filter = " AND d.camera_id = :camera_id" if camera_id else ""
+        params = {"cutoff": cutoff.isoformat(), "limit": limit}
+        if camera_id:
+            params["camera_id"] = camera_id
+
+        query = text(
+            "SELECT d.id, d.camera_id, d.event_type, d.track_id, "
+            "d.alert, d.severity, d.reason, d.recommendation, "
+            "d.eval_duration_ms, d.created_at, "
+            "e.id AS escalation_id, e.outcome, e.status AS escalation_status, "
+            "e.acknowledged_by, e.dismissed_by "
+            "FROM agent_decision d "
+            "LEFT JOIN escalation_alert e ON e.decision_id = d.id "
+            f"WHERE d.created_at >= :cutoff{cam_filter} "
+            "ORDER BY d.created_at DESC "
+            "LIMIT :limit"
+        )
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row[0],
+                    "camera_id": row[1],
+                    "event_type": row[2],
+                    "track_id": row[3],
+                    "alert": bool(row[4]),
+                    "severity": row[5],
+                    "reason": row[6],
+                    "recommendation": row[7],
+                    "eval_duration_ms": row[8],
+                    "created_at": row[9],
+                    "escalation_id": row[10],
+                    "outcome": row[11],
+                    "escalation_status": row[12],
+                    "acknowledged_by": row[13] or "",
+                    "dismissed_by": row[14] or "",
+                })
+            return results
+
     def _to_dict(self, alert):
         """Convert an EscalationAlert to a plain dict."""
         return {
             "id": alert.id,
+            "camera_id": alert.camera_id,
             "decision_id": alert.decision_id,
             "event_type": alert.event_type,
             "track_id": alert.track_id,

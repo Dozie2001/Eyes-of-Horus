@@ -35,6 +35,7 @@ class AgentDecision(SQLModel, table=True):
     __tablename__ = "agent_decision"
 
     id: int | None = Field(default=None, primary_key=True)
+    camera_id: str = Field(default="cam1", index=True)
     event_type: str = Field(index=True)
     track_id: int = Field(index=True)
     alert: bool = Field(index=True)
@@ -72,7 +73,7 @@ class DecisionStorage:
         SQLModel.metadata.create_all(self.engine)
 
     def save_decision(self, event_type, track_id, alert, severity, reason,
-                      recommendation="", eval_duration_ms=0):
+                      recommendation="", eval_duration_ms=0, camera_id="cam1"):
         """
         Save one evaluation decision.
 
@@ -80,6 +81,7 @@ class DecisionStorage:
             int: the decision row ID
         """
         decision = AgentDecision(
+            camera_id=camera_id,
             event_type=event_type,
             track_id=track_id,
             alert=alert,
@@ -94,24 +96,25 @@ class DecisionStorage:
             session.refresh(decision)
             return decision.id
 
-    def get_recent(self, limit=50):
+    def get_recent(self, limit=50, camera_id=None):
         """Get the most recent decisions, newest first."""
         with Session(self.engine) as session:
+            stmt = select(AgentDecision)
+            if camera_id:
+                stmt = stmt.where(AgentDecision.camera_id == camera_id)
             decisions = session.exec(
-                select(AgentDecision)
-                .order_by(AgentDecision.created_at.desc())
-                .limit(limit)
+                stmt.order_by(AgentDecision.created_at.desc()).limit(limit)
             ).all()
             return [self._to_dict(d) for d in decisions]
 
-    def get_alerts_only(self, limit=50):
+    def get_alerts_only(self, limit=50, camera_id=None):
         """Get only decisions where alert=True."""
         with Session(self.engine) as session:
+            stmt = select(AgentDecision).where(AgentDecision.alert == True)
+            if camera_id:
+                stmt = stmt.where(AgentDecision.camera_id == camera_id)
             decisions = session.exec(
-                select(AgentDecision)
-                .where(AgentDecision.alert == True)
-                .order_by(AgentDecision.created_at.desc())
-                .limit(limit)
+                stmt.order_by(AgentDecision.created_at.desc()).limit(limit)
             ).all()
             return [self._to_dict(d) for d in decisions]
 
@@ -119,6 +122,7 @@ class DecisionStorage:
         """Convert an AgentDecision to a plain dict."""
         return {
             "id": decision.id,
+            "camera_id": decision.camera_id,
             "event_type": decision.event_type,
             "track_id": decision.track_id,
             "alert": decision.alert,

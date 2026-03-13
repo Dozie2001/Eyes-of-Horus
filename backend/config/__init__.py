@@ -30,6 +30,7 @@ class Secrets(BaseModel):
     telegram_chat_id: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    groq_api_key: str = ""
     openclaw_token: str = ""
     # Camera credentials are dynamic — accessed via get_camera_credential()
 
@@ -317,6 +318,7 @@ def get_config(
         telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
         anthropic_api_key=env.get("ANTHROPIC_API_KEY", ""),
         gemini_api_key=env.get("GEMINI_API_KEY", ""),
+        groq_api_key=env.get("GROQ_API_KEY", ""),
         openclaw_token=env.get("OPENCLAW_TOKEN", ""),
     )
     secrets._env = env

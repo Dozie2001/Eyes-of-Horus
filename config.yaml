@@ -14,10 +14,9 @@ detection:
   association_distance: 200.0  # max pixels to associate an object with a person
 
 tracking:
-  loiter_threshold: 10.0       # 10 seconds for testing (300 for production)
-  stationary_threshold: 5.0     # pixels/frame — below this = standing still
-  departure_seconds: 3.0        # seconds without detection before marking departed
-  companion_distance: 200.0      # max pixels between two people for COMPANION event
+  departure_seconds: 10.0
+  companion_distance: 200.0
+  summary_interval: 60.0        # seconds between periodic track summaries to AI
   quiet_hours:
     start: "21:00"
     end: "06:00"
@@ -42,6 +41,8 @@ agent:
   enabled: true
   model: "qwen2.5:7b"
   vision_model: "qwen2.5vl:7b"
+  vision_provider: "groq"             # "groq" (cloud, fast) or "gemini" (cloud) or "ollama" (local)
+  timeout_seconds: 60.0
   cooldown_seconds: 120.0
 escalation:
   enabled: true

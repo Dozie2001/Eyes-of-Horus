@@ -65,15 +65,20 @@ async def lifespan(app: FastAPI):
         escalation.start()
     app.state.escalation = escalation
 
-    runner = PipelineRunner(config, escalation=escalation)
-    app.state.pipeline = runner
-
-    if config.cameras:
+    runners = {}
+    enabled_cameras = [c for c in config.cameras if c.enabled]
+    for cam_cfg in enabled_cameras:
+        runner = PipelineRunner(config, escalation=escalation, camera_config=cam_cfg)
         runner.start(storage)
+        runners[cam_cfg.name] = runner
+
+    app.state.runners = runners
+    app.state.pipeline = next(iter(runners.values()))
 
     yield
 
-    runner.stop()
+    for runner in runners.values():
+        runner.stop()
     if escalation is not None:
         escalation.stop()
 
@@ -100,38 +105,45 @@ app.add_middleware(
 def health():
     config = app.state.config
     storage = app.state.storage
-    pipeline = app.state.pipeline
+    runners = app.state.runners
     counts = storage.count_by_type()
+    camera_status = {cam_id: r.status for cam_id, r in runners.items()}
     return {
         "status": "ok",
         "site_id": config.site.id,
         "site_name": config.site.name,
         "event_count": sum(counts.values()),
-        "pipeline_status": pipeline.status,
+        "cameras": camera_status,
     }
 
 
 @app.get("/pipeline/status")
 def pipeline_status():
-    """Current state of the detection pipeline."""
-    runner = app.state.pipeline
-    return {
-        "status": runner.status,
-        "fps": runner.fps,
-        "frame_count": runner.frame_count,
-        "active_tracks": runner.active_tracks,
-        "error": runner.error,
-    }
+    """Current state of all detection pipelines (one per camera)."""
+    runners = app.state.runners
+    cameras = {}
+    for cam_id, runner in runners.items():
+        cameras[cam_id] = {
+            "status": runner.status,
+            "fps": runner.fps,
+            "frame_count": runner.frame_count,
+            "active_tracks": runner.active_tracks,
+            "error": runner.error,
+        }
+    return {"cameras": cameras}
 
 
 @app.get("/events")
-def get_events(limit: int = Query(default=50, ge=1, le=500)):
-    return app.state.storage.get_recent(limit=limit)
+def get_events(
+    limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
+):
+    return app.state.storage.get_recent(limit=limit, camera_id=camera_id)
 
 
 @app.get("/events/summary")
-def get_events_summary():
-    counts = app.state.storage.count_by_type()
+def get_events_summary(camera_id: Optional[str] = Query(default=None)):
+    counts = app.state.storage.count_by_type(camera_id=camera_id)
     return {
         "counts": counts,
         "total": sum(counts.values()),
@@ -142,34 +154,57 @@ def get_events_summary():
 def get_events_by_type(
     event_type: str,
     limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
 ):
     if event_type not in ALL_EVENT_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid event_type '{event_type}'. Must be one of: {ALL_EVENT_TYPES}",
         )
-    return app.state.storage.get_by_type(event_type, limit=limit)
+    return app.state.storage.get_by_type(event_type, limit=limit, camera_id=camera_id)
 
 
 @app.get("/events/track/{bytetrack_id}")
 def get_events_by_track(
     bytetrack_id: int,
     limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
 ):
-    return app.state.storage.get_by_track(bytetrack_id, limit=limit)
+    return app.state.storage.get_by_track(bytetrack_id, limit=limit, camera_id=camera_id)
 
 
 
 @app.get("/agent/decisions")
-def get_agent_decisions(limit: int = Query(default=50, ge=1, le=500)):
+def get_agent_decisions(
+    limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
+):
     """Recent AI agent evaluation decisions (all, including non-alerts)."""
-    return app.state.decisions.get_recent(limit=limit)
+    return app.state.decisions.get_recent(limit=limit, camera_id=camera_id)
 
 
 @app.get("/agent/alerts")
-def get_agent_alerts(limit: int = Query(default=50, ge=1, le=500)):
+def get_agent_alerts(
+    limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
+):
     """Only decisions where the agent flagged an alert."""
-    return app.state.decisions.get_alerts_only(limit=limit)
+    return app.state.decisions.get_alerts_only(limit=limit, camera_id=camera_id)
+
+
+@app.get("/agent/feedback")
+def get_agent_feedback(
+    days: int = Query(default=30, ge=1, le=365),
+    camera_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    """Decisions enriched with escalation outcomes — for feedback analysis."""
+    escalation = app.state.escalation
+    if escalation is None:
+        return []
+    return escalation.storage.get_decisions_with_outcomes(
+        days=days, camera_id=camera_id, limit=limit,
+    )
 
 
 # --- Config endpoints ---
@@ -181,47 +216,54 @@ class QuietHoursUpdate(BaseModel):
 
 @app.get("/config/quiet-hours")
 def get_quiet_hours():
-    """Get current quiet hours setting."""
-    runner = app.state.pipeline
-    tracker = runner._tracker
-    if tracker is None or tracker.quiet_hours is None:
-        return {"start": None, "end": None, "active": False}
-    return {
-        "start": tracker.quiet_hours["start"],
-        "end": tracker.quiet_hours["end"],
-        "active": True,
-    }
+    """Get current quiet hours setting (from first running pipeline)."""
+    for runner in app.state.runners.values():
+        tracker = runner._tracker
+        if tracker is not None:
+            if tracker.quiet_hours is None:
+                return {"start": None, "end": None, "active": False}
+            return {
+                "start": tracker.quiet_hours["start"],
+                "end": tracker.quiet_hours["end"],
+                "active": True,
+            }
+    return {"start": None, "end": None, "active": False}
 
 
 @app.put("/config/quiet-hours")
 def set_quiet_hours(body: QuietHoursUpdate):
-    """Update quiet hours without restarting. Send null to disable."""
-    runner = app.state.pipeline
-    tracker = runner._tracker
-    if tracker is None:
-        raise HTTPException(status_code=503, detail="Pipeline not running")
-
-    if body.start is None or body.end is None:
-        tracker.quiet_hours = None
-        return {"start": None, "end": None, "active": False}
+    """Update quiet hours on ALL cameras without restarting. Send null to disable."""
+    runners = app.state.runners
+    any_updated = False
 
     # Validate time format
-    from datetime import time
-    try:
-        time.fromisoformat(body.start)
-        time.fromisoformat(body.end)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid time format. Use HH:MM (e.g. '22:00')",
-        )
+    if body.start is not None and body.end is not None:
+        from datetime import time
+        try:
+            time.fromisoformat(body.start)
+            time.fromisoformat(body.end)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid time format. Use HH:MM (e.g. '22:00')",
+            )
 
-    tracker.quiet_hours = {"start": body.start, "end": body.end}
-    return {
-        "start": body.start,
-        "end": body.end,
-        "active": True,
-    }
+    for runner in runners.values():
+        tracker = runner._tracker
+        if tracker is None:
+            continue
+        if body.start is None or body.end is None:
+            tracker.quiet_hours = None
+        else:
+            tracker.quiet_hours = {"start": body.start, "end": body.end}
+        any_updated = True
+
+    if not any_updated:
+        raise HTTPException(status_code=503, detail="No pipelines running")
+
+    if body.start is None or body.end is None:
+        return {"start": None, "end": None, "active": False}
+    return {"start": body.start, "end": body.end, "active": True}
 
 
 # --- Role management endpoints ---
@@ -283,21 +325,27 @@ def revoke_member(member_id: int):
 # --- Escalation endpoints ---
 
 @app.get("/escalation/pending")
-def get_escalation_pending(limit: int = Query(default=50, ge=1, le=500)):
+def get_escalation_pending(
+    limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
+):
     """Currently unacknowledged escalation alerts."""
     escalation = app.state.escalation
     if escalation is None:
         return []
-    return escalation.storage.get_pending(limit=limit)
+    return escalation.storage.get_pending(limit=limit, camera_id=camera_id)
 
 
 @app.get("/escalation/recent")
-def get_escalation_recent(limit: int = Query(default=50, ge=1, le=500)):
+def get_escalation_recent(
+    limit: int = Query(default=50, ge=1, le=500),
+    camera_id: Optional[str] = Query(default=None),
+):
     """All escalation alerts (for dashboard), newest first."""
     escalation = app.state.escalation
     if escalation is None:
         return []
-    return escalation.storage.get_recent(limit=limit)
+    return escalation.storage.get_recent(limit=limit, camera_id=camera_id)
 
 
 @app.put("/escalation/{alert_id}/acknowledge")
@@ -329,13 +377,16 @@ def dismiss_escalation(alert_id: int):
 # --- Metrics endpoints ---
 
 @app.get("/metrics/alert-quality")
-def get_alert_quality_metrics(days: int = Query(default=30, ge=1, le=365)):
+def get_alert_quality_metrics(
+    days: int = Query(default=30, ge=1, le=365),
+    camera_id: Optional[str] = Query(default=None),
+):
     """Alert outcome statistics — false positive rates by event type and severity."""
     escalation = app.state.escalation
     if escalation is None:
         raise HTTPException(status_code=503, detail="Escalation not enabled")
 
-    return escalation.storage.get_outcome_stats(days=days)
+    return escalation.storage.get_outcome_stats(days=days, camera_id=camera_id)
 
 
 # --- Static file mount for snapshots ---

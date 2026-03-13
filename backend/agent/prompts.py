@@ -74,7 +74,8 @@ Each tracked person has these measurements:
 
 
 def build_user_prompt(event_type, event_data, scene_summary=None,
-                      track_history=None, visual_description=None):
+                      track_history=None, visual_description=None,
+                      cross_camera_context=None, feedback_context=None):
     """
     Build the user prompt with context layers.
 
@@ -84,6 +85,7 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         scene_summary: dict from SceneMemory.get_scene_summary() or None
         track_history: list of past events for this track from EventStorage or None
         visual_description: text from VisionDescriber or None
+        feedback_context: dict from EvalAgent._get_feedback_context() or None
 
     Returns:
         str: formatted user prompt
@@ -153,7 +155,22 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
     else:
         parts.append("No scene data available (Redis may be down)")
 
-    # Layer 4: Track history
+    # Layer 4: Cross-camera context
+    if cross_camera_context:
+        parts.append("")
+        parts.append("## Other cameras on site")
+        for cam in cross_camera_context:
+            cam_id = cam.get("camera_id", "?")
+            pcount = cam.get("people_count", 0)
+            objects = cam.get("objects", [])
+            last_update = cam.get("last_update", "")
+            if pcount > 0:
+                obj_str = f", objects: [{', '.join(objects)}]" if objects else ""
+                parts.append(f"- {cam_id}: {pcount} people{obj_str} (updated: {last_update})")
+            else:
+                parts.append(f"- {cam_id}: empty (updated: {last_update})")
+
+    # Layer 5: Track history
     parts.append("")
     parts.append("## This person's history")
     if track_history:
@@ -166,5 +183,22 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
             parts.append(f"  - {evt_type} at {evt_ts} (duration: {evt_dur}s, quiet hours: {evt_quiet})")
     else:
         parts.append("No previous events for this person.")
+
+    # Layer 6: Feedback from past alert outcomes
+    if feedback_context is not None:
+        parts.append("")
+        parts.append("## Feedback from previous alerts (learn from this)")
+        fp_pct = int(feedback_context["overall_fp_rate"] * 100)
+        resolved = feedback_context["resolved_total"]
+        parts.append(f"Overall false alarm rate: {fp_pct}% (from {resolved} resolved alerts).")
+
+        et_guidance = feedback_context.get("event_type_guidance")
+        if et_guidance:
+            parts.append(f"Event-type guidance: {et_guidance}")
+
+        for sev_line in feedback_context.get("severity_guidance", []):
+            parts.append(f"Severity guidance: {sev_line}")
+
+        parts.append("Use this feedback to calibrate your judgment. If false alarm rates are high, require stronger evidence before alerting.")
 
     return "\n".join(parts)

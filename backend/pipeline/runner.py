@@ -17,6 +17,8 @@ import threading
 import time
 from datetime import datetime
 
+import cv2
+
 from capture.camera import Camera
 from detection.detector import Detector
 from events.bus import event_bus
@@ -39,9 +41,11 @@ class PipelineRunner:
     - FastAPI only reads the database, pipeline only writes
     """
 
-    def __init__(self, config, escalation=None):
+    def __init__(self, config, escalation=None, camera_config=None):
         self.config = config
         self._escalation = escalation
+        self._camera_config = camera_config
+        self.camera_id = camera_config.name if camera_config else "cam1"
         self.running = False
         self._thread = None
         self._eval_agent = None
@@ -71,7 +75,7 @@ class PipelineRunner:
             target=self._run_loop,
             args=(storage,),
             daemon=True,
-            name="detection-pipeline",
+            name=f"pipeline-{self.camera_id}",
         )
         self._thread.start()
 
@@ -85,9 +89,15 @@ class PipelineRunner:
         """The detection loop. Runs in its own thread."""
         try:
             # Resolve camera source from config
-            camera_configs = [c for c in self.config.cameras if c.enabled]
-            if camera_configs:
-                cam_cfg = camera_configs[0]
+            cam_cfg = self._camera_config
+            if cam_cfg is None:
+                # Backward compat: pick first enabled camera
+                camera_configs = [c for c in self.config.cameras if c.enabled]
+                if camera_configs:
+                    cam_cfg = camera_configs[0]
+                    self.camera_id = cam_cfg.name
+
+            if cam_cfg:
                 source = cam_cfg.resolved_source(self.config.secrets)
                 tracking = cam_cfg.effective_tracking(self.config.tracking)
             else:
@@ -101,7 +111,7 @@ class PipelineRunner:
             camera = Camera(source=source)
             if not camera.connect():
                 self.status = "error"
-                self.error = f"Could not connect to camera: {source}"
+                self.error = f"[{self.camera_id}] Could not connect to camera: {source}"
                 return
 
             detector = Detector(
@@ -122,11 +132,11 @@ class PipelineRunner:
                         password=self.config.redis.password,
                     )
                     r.ping()
-                    bus = RedisBus(r, camera_id=cam_cfg.name if camera_configs else "cam1")
-                    scene_memory = SceneMemory(r, camera_id=cam_cfg.name if camera_configs else "cam1")
-                    print(f"Using RedisBus (stream: {bus.stream})")
+                    bus = RedisBus(r, camera_id=self.camera_id)
+                    scene_memory = SceneMemory(r, camera_id=self.camera_id)
+                    print(f"[{self.camera_id}] Using RedisBus (stream: {bus.stream})")
                 except Exception as e:
-                    print(f"Redis unavailable ({e}), falling back to in-process bus")
+                    print(f"[{self.camera_id}] Redis unavailable ({e}), falling back to in-process bus")
                     bus = event_bus
                     scene_memory = None
             else:
@@ -139,6 +149,7 @@ class PipelineRunner:
                 departure_seconds=tracking.departure_seconds,
                 companion_distance=tracking.companion_distance,
                 summary_interval=tracking.summary_interval,
+                camera_id=self.camera_id,
             )
 
             # Subscribe storage to bus (auto-saves events)
@@ -160,6 +171,7 @@ class PipelineRunner:
                     scene_memory=scene_memory,
                     redis_client=redis_client,
                     escalation=self._escalation,
+                    camera_id=self.camera_id,
                 )
                 agent.subscribe(bus)
                 agent.start()
@@ -173,7 +185,7 @@ class PipelineRunner:
 
             camera.warm_up()
             self.status = "running"
-            print(f"Pipeline running: source={source}, FPS={camera.fps}")
+            print(f"[{self.camera_id}] Pipeline running: source={source}, FPS={camera.fps}")
 
             # FPS tracking
             fps_start = time.time()
@@ -220,12 +232,12 @@ class PipelineRunner:
             if self._eval_agent is not None:
                 self._eval_agent.stop()
             self.status = "stopped"
-            print("Pipeline stopped.")
+            print(f"[{self.camera_id}] Pipeline stopped.")
 
         except Exception as e:
             self.status = "error"
             self.error = str(e)
-            print(f"Pipeline error: {e}")
+            print(f"[{self.camera_id}] Pipeline error: {e}")
 
     def _subscribe_snapshot_saver(self, bus):
         """Save a snapshot image + video clip for each event."""
@@ -237,7 +249,9 @@ class PipelineRunner:
             if self._current_frame is None:
                 return
 
-            os.makedirs("data/events", exist_ok=True)
+            cam_id = event_data.get("camera_id", self.camera_id)
+            events_dir = f"data/events/{cam_id}"
+            os.makedirs(events_dir, exist_ok=True)
             bbox = event_data.get("bbox")
             track_id = event_data.get("track_id", 0)
             ts = datetime.fromisoformat(event_data["timestamp"])
@@ -250,7 +264,7 @@ class PipelineRunner:
             else:
                 snap_filename = f"evt_{ts_str}_track{track_id}_{event_type}.jpg"
 
-            snap_path = f"data/events/{snap_filename}"
+            snap_path = f"{events_dir}/{snap_filename}"
 
             if bbox:
                 dets = [{"bbox": bbox, "confidence": 1.0, "label": f"#{track_id}"}]
@@ -273,7 +287,7 @@ class PipelineRunner:
             if event_type != "track_summary":
                 if self._frame_buffer and len(self._frame_buffer) > 10:
                     clip_filename = f"evt_{ts_str}_track{track_id}_{event_type}.mp4"
-                    clip_path = f"data/events/{clip_filename}"
+                    clip_path = f"{events_dir}/{clip_filename}"
                     frames = list(self._frame_buffer)
                     threading.Thread(
                         target=self._write_clip,
@@ -311,11 +325,10 @@ class PipelineRunner:
             output_fps = min(self._source_fps, 15)
             step = max(1, round(self._source_fps / output_fps))
 
+            # Get actual frame size (may differ from camera if resized)
+            h, w = frames[0].shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(
-                path, fourcc, output_fps,
-                (self._frame_size[0], self._frame_size[1]),
-            )
+            writer = cv2.VideoWriter(path, fourcc, output_fps, (w, h))
 
             for i, frame in enumerate(frames):
                 if i % step == 0:
@@ -352,6 +365,7 @@ class PipelineRunner:
                     extra = f" | dur={dur}s | mvmt={mvmt} | spread={spread}"
                     if objects:
                         extra += f" | objects={objects}"
-                    print(f"  EVENT: {event_type.upper()} | Track #{track_id} | {ts}{extra}")
+                    cam = event_data.get("camera_id", "?")
+                    print(f"  EVENT: [{cam}] {event_type.upper()} | Track #{track_id} | {ts}{extra}")
                 return handler
             bus.on(et, make_handler(et))

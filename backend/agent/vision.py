@@ -314,3 +314,120 @@ class GeminiVisionDescriber:
         except Exception as e:
             print(f"Gemini vision failed: {e}")
             return None
+
+
+class GroqVisionDescriber:
+    """
+    Sends images to Groq (Llama 4 Scout) for description.
+
+    Uses OpenAI-compatible REST API. Very fast inference.
+    Free tier: 30 req/min.
+    """
+
+    GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, api_key, model="meta-llama/llama-4-scout-17b-16e-instruct",
+                 timeout=30.0):
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self._available = None
+        self._checked_at = 0
+        self._cache_ttl = 300
+
+    def is_available(self):
+        """Check if the Groq API key works."""
+        now = time.time()
+        if (now - self._checked_at) < self._cache_ttl:
+            return self._available
+
+        try:
+            resp = httpx.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10.0,
+            )
+            self._available = resp.status_code == 200
+            if not self._available:
+                print(f"Groq health check failed: HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"Groq health check failed: {e}")
+            self._available = False
+
+        self._checked_at = now
+        return self._available
+
+    def describe(self, image_path):
+        """Describe what's happening in a single snapshot image."""
+        if not self.is_available():
+            return None
+
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except FileNotFoundError:
+            print(f"Vision: snapshot not found: {image_path}")
+            return None
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": VISION_PROMPT},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{img_b64}"
+                }},
+            ],
+        }]
+
+        return self._call_groq(messages, "snapshot")
+
+    def describe_video(self, video_path, num_frames=5):
+        """Describe what's happening across multiple frames from a video clip."""
+        if not self.is_available():
+            return None
+
+        frames_b64 = _extract_key_frames(video_path, num_frames)
+        if not frames_b64:
+            return None
+
+        content = [{"type": "text", "text": VIDEO_VISION_PROMPT}]
+        for frame_b64 in frames_b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"},
+            })
+
+        messages = [{"role": "user", "content": content}]
+        return self._call_groq(messages, f"video, {len(frames_b64)} frames")
+
+    def _call_groq(self, messages, label):
+        """Make a Groq API call."""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 256,
+        }
+
+        try:
+            start = time.time()
+            resp = httpx.post(
+                self.GROQ_URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+                timeout=self.timeout,
+            )
+            elapsed_ms = int((time.time() - start) * 1000)
+
+            if resp.status_code != 200:
+                print(f"Groq API error: HTTP {resp.status_code} — {resp.text[:200]}")
+                return None
+
+            result = resp.json()
+            text = result["choices"][0]["message"]["content"].strip()
+            print(f"  VISION ({label}): {text[:80]}... ({elapsed_ms}ms)")
+            return text
+
+        except Exception as e:
+            print(f"Groq vision failed: {e}")
+            return None

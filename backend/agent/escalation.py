@@ -119,7 +119,7 @@ class EscalationManager:
 
     def escalate(self, decision_id, event_type, track_id, severity,
                  reason, recommendation="", description="",
-                 snapshot_path=None, video_path=None):
+                 snapshot_path=None, video_path=None, camera_id="cam1"):
         """
         Start the escalation chain for an alert.
 
@@ -151,6 +151,7 @@ class EscalationManager:
             snapshot_path=snapshot_path or "",
             video_path=video_path or "",
             next_escalation_at=next_esc_at,
+            camera_id=camera_id,
         )
 
         # Send to all active members of the first role
