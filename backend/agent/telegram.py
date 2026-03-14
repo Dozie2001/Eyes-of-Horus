@@ -67,7 +67,7 @@ class TelegramSender:
         )
 
         text = (
-            f"{severity_icon} *StangWatch Alert*\n"
+            f"{severity_icon} *Eyes of Horus Alert*\n"
             f"\n"
             f"*Event:* {event_type.upper()}\n"
             f"*Severity:* {severity}\n"

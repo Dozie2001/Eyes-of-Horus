@@ -441,7 +441,7 @@ class EscalationManager:
         # Not a member, no pending invite
         self._telegram.send_text(
             chat_id,
-            "Welcome to StangWatch.\n\n"
+            "Welcome to Eyes of Horus.\n\n"
             "If you have an invite code, send:\n"
             "`/join <code>`\n\n"
             "If an admin invited you by username, "

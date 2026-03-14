@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="StangWatch API",
+    title="Eyes of Horus API",
     description="AI CCTV monitoring",
     version="0.2.0",
     lifespan=lifespan,
