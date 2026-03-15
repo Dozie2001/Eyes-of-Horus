@@ -15,7 +15,7 @@ export function SystemHealthCard() {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border border-border/50 p-6">
+      <div className="rounded-lg border border-border p-6">
         <Skeleton className="mb-4 h-3 w-20" />
         <Skeleton className="h-8 w-32" />
       </div>

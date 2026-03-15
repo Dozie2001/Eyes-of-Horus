@@ -25,7 +25,7 @@ export function CameraStatusCards() {
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="rounded-lg border border-border/50 p-6">
+        <div className="rounded-lg border border-border p-6">
           <Skeleton className="mb-4 h-3 w-16" />
           <Skeleton className="h-10 w-full" />
         </div>
@@ -35,7 +35,7 @@ export function CameraStatusCards() {
 
   if (error || !data) {
     return (
-      <div className="rounded-lg border border-border/30 p-6">
+      <div className="rounded-lg border border-border p-6">
         <p className="text-sm text-muted-foreground">
           {error?.message ?? "Cannot load cameras"}
         </p>
@@ -47,7 +47,7 @@ export function CameraStatusCards() {
 
   if (cameras.length === 0) {
     return (
-      <div className="rounded-lg border border-border/30 p-6">
+      <div className="rounded-lg border border-border p-6">
         <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
           No cameras
         </p>

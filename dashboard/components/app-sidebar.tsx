@@ -9,6 +9,7 @@ import {
   Camera,
   Settings,
 } from "lucide-react";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import {
   Sidebar,
   SidebarContent,
@@ -73,11 +74,14 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="px-5 pb-5">
-        <div className="flex items-center gap-2">
-          <div className="size-1.5 rounded-full bg-green-500/80" />
-          <span className="font-mono text-[10px] text-muted-foreground/50">
-            v0.1.0
-          </span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="size-1.5 rounded-full bg-green-500/80" />
+            <span className="font-mono text-[10px] text-muted-foreground/50">
+              v0.1.0
+            </span>
+          </div>
+          <ThemeToggle />
         </div>
       </SidebarFooter>
     </Sidebar>

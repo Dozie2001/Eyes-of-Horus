@@ -20,7 +20,7 @@ export function PendingAlertsCard() {
 
   if (isLoading) {
     return (
-      <div className="rounded-lg border border-border/50 p-6">
+      <div className="rounded-lg border border-border p-6">
         <Skeleton className="mb-4 h-3 w-24" />
         <Skeleton className="h-10 w-16" />
       </div>

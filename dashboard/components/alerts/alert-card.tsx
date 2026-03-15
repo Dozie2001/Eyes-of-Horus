@@ -27,7 +27,7 @@ export function AlertCard({ alert, onAcknowledge, onDismiss, readOnly = false }:
 
   return (
     <div
-      className={`border-l-2 rounded-lg border border-border/30 transition-all hover:border-border/50 hover:bg-card/40 ${borderAccent(alert.severity)} ${
+      className={`border-l-2 rounded-lg border border-border transition-all hover:border-border hover:bg-card/40 ${borderAccent(alert.severity)} ${
         isPending && alert.severity === "high" ? "animate-pulse-subtle" : ""
       }`}
     >
@@ -36,6 +36,7 @@ export function AlertCard({ alert, onAcknowledge, onDismiss, readOnly = false }:
         <div className="w-full shrink-0 md:w-44">
           <SnapshotImage
             path={alert.snapshot_path || null}
+            videoPath={alert.video_path || null}
             alt={`Alert #${alert.id}`}
             className="aspect-video w-full rounded-md"
           />

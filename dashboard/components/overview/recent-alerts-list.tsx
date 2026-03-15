@@ -28,7 +28,7 @@ export function RecentAlertsList() {
 
   if (alerts.length === 0) {
     return (
-      <div className="rounded-lg border border-border/30 py-12 text-center">
+      <div className="rounded-lg border border-border py-12 text-center">
         <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/40">
           No alerts recorded
         </p>
@@ -40,7 +40,7 @@ export function RecentAlertsList() {
     <div className="flex flex-col gap-2">
       {alerts.map((alert, i) => (
         <BlurFade key={alert.id} delay={i * 0.08} direction="up" offset={4}>
-          <div className="group flex items-start gap-4 rounded-lg border border-border/30 p-4 transition-colors hover:border-border/60 hover:bg-card/50">
+          <div className="group flex items-start gap-4 rounded-lg border border-border p-4 transition-colors hover:border-border/60 hover:bg-card/50">
             {/* Severity indicator — a thin vertical line */}
             <div
               className={`mt-1 h-8 w-0.5 shrink-0 rounded-full ${
