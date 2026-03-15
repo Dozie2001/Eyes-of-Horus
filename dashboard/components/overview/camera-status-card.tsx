@@ -1,44 +1,17 @@
-/**
- * Camera status cards — one card per camera showing live stats.
- *
- * Data source: GET /pipeline/status (polled every 10s)
- *
- * Each camera card shows:
- *   - Camera name
- *   - Status dot (green=running, yellow=starting, red=error/stopped)
- *   - FPS (frames per second the detector processes)
- *   - Active tracks (how many people are currently on camera)
- *   - Error message (if any)
- *
- * This renders a grid of cards — one per camera in the pipeline.
- */
-
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
 import { getPipelineStatus } from "@/lib/api";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
+import { MagicCard } from "@/components/ui/magic-card";
+import { NumberTicker } from "@/components/ui/number-ticker";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/**
- * Map camera status to a colored dot.
- *   running  → green  (everything is working)
- *   starting → yellow (still initializing)
- *   stopped  → gray   (not running)
- *   error    → red    (something broke)
- */
 function statusColor(status: string): string {
   switch (status) {
     case "running":  return "bg-green-500";
     case "starting": return "bg-yellow-500";
     case "error":    return "bg-destructive";
-    default:         return "bg-muted-foreground";
+    default:         return "bg-muted-foreground/40";
   }
 }
 
@@ -52,28 +25,21 @@ export function CameraStatusCards() {
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <Skeleton className="h-5 w-24" />
-          </CardHeader>
-          <CardContent>
-            <Skeleton className="h-12 w-full" />
-          </CardContent>
-        </Card>
+        <div className="rounded-lg border border-border/50 p-6">
+          <Skeleton className="mb-4 h-3 w-16" />
+          <Skeleton className="h-10 w-full" />
+        </div>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Cameras</CardTitle>
-          <CardDescription className="text-destructive">
-            {error?.message ?? "Cannot load camera status"}
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="rounded-lg border border-border/30 p-6">
+        <p className="text-sm text-muted-foreground">
+          {error?.message ?? "Cannot load cameras"}
+        </p>
+      </div>
     );
   }
 
@@ -81,45 +47,76 @@ export function CameraStatusCards() {
 
   if (cameras.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Cameras</CardTitle>
-          <CardDescription>No cameras configured</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="rounded-lg border border-border/30 p-6">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          No cameras
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       {cameras.map(([camId, cam]) => (
-        <Card key={camId}>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <span className={`size-2 rounded-full ${statusColor(cam.status)}`} />
-              {camId}
-            </CardTitle>
-            <CardDescription>
-              {cam.status === "error" ? cam.error : cam.status}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-6 text-sm">
+        <MagicCard
+          key={camId}
+          className="rounded-lg"
+          gradientColor="oklch(0.82 0.12 70 / 3%)"
+          gradientFrom="oklch(1 0 0 / 8%)"
+          gradientTo="transparent"
+        >
+          <div className="p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={`size-1.5 rounded-full ${statusColor(cam.status)}`} />
+                <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                  {camId}
+                </span>
+              </div>
+              <span className="font-mono text-[10px] text-muted-foreground/40">
+                {cam.status}
+              </span>
+            </div>
+
+            <div className="mt-6 grid grid-cols-3 gap-4">
               <div>
-                <span className="text-lg font-bold">{cam.fps}</span>
-                <p className="text-xs text-muted-foreground">FPS</p>
+                <NumberTicker
+                  value={cam.fps}
+                  decimalPlaces={1}
+                  className="text-xl font-light tabular-nums"
+                />
+                <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50">
+                  fps
+                </p>
               </div>
               <div>
-                <span className="text-lg font-bold">{cam.active_tracks}</span>
-                <p className="text-xs text-muted-foreground">People</p>
+                <NumberTicker
+                  value={cam.active_tracks}
+                  className="text-xl font-light tabular-nums"
+                />
+                <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50">
+                  people
+                </p>
               </div>
               <div>
-                <span className="text-lg font-bold">{cam.frame_count.toLocaleString()}</span>
-                <p className="text-xs text-muted-foreground">Frames</p>
+                <span className="text-xl font-light tabular-nums">
+                  {cam.frame_count > 999
+                    ? `${(cam.frame_count / 1000).toFixed(0)}k`
+                    : cam.frame_count}
+                </span>
+                <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50">
+                  frames
+                </p>
               </div>
             </div>
-          </CardContent>
-        </Card>
+
+            {cam.status === "error" && cam.error && (
+              <p className="mt-4 font-mono text-[10px] text-destructive/80">
+                {cam.error}
+              </p>
+            )}
+          </div>
+        </MagicCard>
       ))}
     </div>
   );

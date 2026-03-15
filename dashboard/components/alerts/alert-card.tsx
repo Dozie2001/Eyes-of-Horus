@@ -1,40 +1,17 @@
-/**
- * Alert card — a single escalation alert with visual severity and actions.
- *
- * Design choices for "lively" feel:
- *   - Colored left border based on severity (red=high, amber=medium)
- *   - Snapshot image is prominent (not a tiny thumbnail)
- *   - Hover effect on the card for interactivity feel
- *   - Large touch-friendly action buttons (guards use phones)
- *   - Pulse animation on high-severity pending alerts
- *
- * Props:
- *   alert: EscalationAlert from the backend
- *   onAcknowledge: called when guard presses Acknowledge
- *   onDismiss: called when guard presses False Alarm
- *   readOnly: true for resolved alerts (no action buttons)
- */
-
 "use client";
 
 import { Check, X } from "lucide-react";
 import type { EscalationAlert } from "@/lib/types";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { SeverityBadge } from "@/components/shared/severity-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
 import { SnapshotImage } from "@/components/shared/snapshot-image";
 
-/**
- * Map severity to a left-border color class.
- * This gives each card an immediate visual weight — you can scan
- * a list of cards and instantly spot the red (high) ones.
- */
-function borderColor(severity: string): string {
+function borderAccent(severity: string): string {
   switch (severity) {
-    case "high":   return "border-l-destructive";
-    case "medium": return "border-l-warning";
-    default:       return "border-l-muted-foreground";
+    case "high":   return "border-l-destructive/60";
+    case "medium": return "border-l-warning/60";
+    default:       return "border-l-border";
   }
 }
 
@@ -49,85 +26,81 @@ export function AlertCard({ alert, onAcknowledge, onDismiss, readOnly = false }:
   const isPending = alert.status === "pending";
 
   return (
-    <Card
-      className={`border-l-4 transition-colors hover:bg-accent/50 ${borderColor(alert.severity)} ${
+    <div
+      className={`border-l-2 rounded-lg border border-border/30 transition-all hover:border-border/50 hover:bg-card/40 ${borderAccent(alert.severity)} ${
         isPending && alert.severity === "high" ? "animate-pulse-subtle" : ""
       }`}
     >
-      <CardContent className="flex flex-col gap-4 p-4 md:flex-row">
-        {/* Snapshot — prominent on mobile, side panel on desktop */}
-        <div className="w-full shrink-0 md:w-48">
+      <div className="flex flex-col gap-4 p-5 md:flex-row">
+        {/* Snapshot */}
+        <div className="w-full shrink-0 md:w-44">
           <SnapshotImage
             path={alert.snapshot_path || null}
-            alt={`Alert #${alert.id} snapshot`}
+            alt={`Alert #${alert.id}`}
+            className="aspect-video w-full rounded-md"
           />
         </div>
 
-        {/* Alert details */}
-        <div className="flex flex-1 flex-col gap-2">
-          {/* Header row: severity + event type + time */}
+        {/* Content */}
+        <div className="flex flex-1 flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={alert.severity} />
-            <span className="text-sm font-medium">
-              {alert.event_type.toUpperCase()}
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/60">
+              {alert.event_type}
             </span>
-            <span className="text-sm text-muted-foreground">
-              Track #{alert.track_id}
+            <span className="font-mono text-[10px] text-muted-foreground/40">
+              #{alert.track_id}
             </span>
-            <span className="text-xs text-muted-foreground">
+            <span className="font-mono text-[10px] text-muted-foreground/30">
               {alert.camera_id}
             </span>
             <RelativeTime
               timestamp={alert.created_at}
-              className="ml-auto text-xs text-muted-foreground"
+              className="ml-auto font-mono text-[10px] text-muted-foreground/40"
             />
           </div>
 
-          {/* Status for resolved alerts */}
           {!isPending && (
-            <div className="text-sm">
-              {alert.status === "acknowledged" && (
-                <span className="text-green-500">
-                  Acknowledged by {alert.acknowledged_by}
-                </span>
-              )}
-              {alert.status === "dismissed" && (
-                <span className="text-muted-foreground">
-                  Dismissed by {alert.dismissed_by}
-                </span>
-              )}
-            </div>
+            <p className="font-mono text-[10px] text-muted-foreground/50">
+              {alert.status === "acknowledged" && `Acknowledged by ${alert.acknowledged_by}`}
+              {alert.status === "dismissed" && `Dismissed by ${alert.dismissed_by}`}
+            </p>
           )}
 
-          {/* Escalation level indicator */}
           {alert.current_level > 0 && (
-            <p className="text-xs text-warning">
+            <p className="font-mono text-[10px] text-warning/70">
               Escalated to level {alert.current_level + 1}
             </p>
           )}
 
-          {/* Action buttons — large for phone touch targets */}
+          {/* Actions — generous touch targets */}
           {isPending && !readOnly && (
-            <div className="mt-auto flex gap-2 pt-2">
+            <div className="mt-auto flex gap-2 pt-1">
               <Button
                 size="sm"
                 onClick={() => onAcknowledge?.(alert.id)}
+                className="h-8 bg-foreground/10 text-foreground hover:bg-foreground/20"
               >
                 <Check data-icon="inline-start" />
-                Acknowledge
+                <span className="font-mono text-[10px] uppercase tracking-wider">
+                  Acknowledge
+                </span>
               </Button>
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={() => onDismiss?.(alert.id)}
+                className="h-8 text-muted-foreground hover:text-foreground"
               >
                 <X data-icon="inline-start" />
-                False Alarm
+                <span className="font-mono text-[10px] uppercase tracking-wider">
+                  False alarm
+                </span>
               </Button>
             </div>
           )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

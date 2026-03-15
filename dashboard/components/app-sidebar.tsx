@@ -1,14 +1,3 @@
-/**
- * Main navigation sidebar for Eyes of Horus.
- *
- * Uses shadcn's Sidebar component which handles:
- * - Desktop: fixed sidebar on the left
- * - Mobile: collapses to a sheet overlay triggered by SidebarTrigger
- *
- * This is a client component because usePathname() needs browser context
- * to know which page we're on (for highlighting the active nav item).
- */
-
 "use client";
 
 import Link from "next/link";
@@ -24,7 +13,6 @@ import {
   Sidebar,
   SidebarContent,
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuItem,
@@ -33,13 +21,6 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 
-/**
- * Navigation items. Each maps to a page route.
- *
- * The icon is a Lucide React component passed as an object —
- * shadcn rule: pass icons as objects, not string keys.
- * The data-icon attribute tells shadcn to handle icon sizing.
- */
 const navItems = [
   { title: "Overview", href: "/", icon: LayoutDashboard },
   { title: "Alerts", href: "/alerts", icon: Bell },
@@ -49,29 +30,26 @@ const navItems = [
 ];
 
 export function AppSidebar() {
-  // usePathname() returns the current URL path (e.g. "/alerts")
-  // We compare it to each nav item's href to highlight the active one
   const pathname = usePathname();
 
   return (
     <Sidebar>
-      <SidebarHeader className="p-4">
-        <span className="text-lg font-semibold tracking-tight">
-          Eyes of Horus
-        </span>
-        <span className="text-xs text-muted-foreground">
-          AI CCTV Monitoring
-        </span>
+      <SidebarHeader className="px-5 pt-6 pb-8">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-[10px] tracking-[0.3em] uppercase text-horus">
+            eyes of horus
+          </span>
+          <span className="text-[10px] text-muted-foreground/60">
+            Surveillance Intelligence
+          </span>
+        </div>
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => {
-                // "/" needs exact match, others use prefix match
-                // so "/alerts/123" still highlights the "Alerts" link
                 const isActive =
                   item.href === "/"
                     ? pathname === "/"
@@ -84,7 +62,7 @@ export function AppSidebar() {
                       isActive={isActive}
                     >
                       <item.icon data-icon="inline-start" />
-                      <span>{item.title}</span>
+                      <span className="text-sm">{item.title}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );
@@ -94,8 +72,13 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="p-4">
-        <span className="text-xs text-muted-foreground">v0.1.0</span>
+      <SidebarFooter className="px-5 pb-5">
+        <div className="flex items-center gap-2">
+          <div className="size-1.5 rounded-full bg-green-500/80" />
+          <span className="font-mono text-[10px] text-muted-foreground/50">
+            v0.1.0
+          </span>
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

@@ -1,28 +1,9 @@
-/**
- * System health card — shows if the system is up and running.
- *
- * Data source: GET /health (polled every 10s)
- *
- * Displays:
- *   - Site name (from config.yaml)
- *   - Overall status (ok / error)
- *   - Total event count across all cameras
- *   - Green/red dot for quick visual status
- *
- * This is a client component because useQuery needs React context.
- */
-
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
 import { getHealth } from "@/lib/api";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
+import { MagicCard } from "@/components/ui/magic-card";
+import { NumberTicker } from "@/components/ui/number-ticker";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function SystemHealthCard() {
@@ -34,50 +15,55 @@ export function SystemHealthCard() {
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-32" />
-          <Skeleton className="h-4 w-24" />
-        </CardHeader>
-        <CardContent>
-          <Skeleton className="h-8 w-20" />
-        </CardContent>
-      </Card>
+      <div className="rounded-lg border border-border/50 p-6">
+        <Skeleton className="mb-4 h-3 w-20" />
+        <Skeleton className="h-8 w-32" />
+      </div>
     );
   }
 
   if (error || !data) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>System Health</CardTitle>
-          <CardDescription className="text-destructive">
-            {error?.message ?? "Cannot reach backend"}
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-6">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-destructive">
+          Offline
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {error?.message ?? "Cannot reach backend"}
+        </p>
+      </div>
     );
   }
 
   const isOk = data.status === "ok";
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <span
-            className={`size-2 rounded-full ${isOk ? "bg-green-500" : "bg-destructive"}`}
-          />
+    <MagicCard
+      className="rounded-lg"
+      gradientColor="oklch(0.82 0.12 70 / 5%)"
+      gradientFrom="oklch(0.82 0.12 70 / 40%)"
+      gradientTo="oklch(0.82 0.12 70 / 0%)"
+    >
+      <div className="p-6">
+        <div className="flex items-center gap-2">
+          <div className={`size-1.5 rounded-full ${isOk ? "bg-green-500" : "bg-destructive"}`} />
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            System
+          </span>
+        </div>
+        <p className="mt-4 text-sm font-light text-foreground/80">
           {data.site_name}
-        </CardTitle>
-        <CardDescription>
-          {isOk ? "System operational" : "System error"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{data.event_count.toLocaleString()}</div>
-        <p className="text-xs text-muted-foreground">Total events recorded</p>
-      </CardContent>
-    </Card>
+        </p>
+        <div className="mt-6 flex items-baseline gap-1">
+          <NumberTicker
+            value={data.event_count}
+            className="text-3xl font-light tabular-nums tracking-tight"
+          />
+          <span className="font-mono text-[10px] text-muted-foreground/60">
+            events
+          </span>
+        </div>
+      </div>
+    </MagicCard>
   );
 }

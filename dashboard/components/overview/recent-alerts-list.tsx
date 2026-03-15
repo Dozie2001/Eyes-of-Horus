@@ -1,29 +1,8 @@
-/**
- * Recent alerts list — last 5 AI-flagged alerts.
- *
- * Data source: GET /agent/alerts?limit=5 (polled every 10s)
- *
- * Shows a compact list of the most recent alerts with:
- *   - Severity badge
- *   - Event type + track ID
- *   - AI's reason (truncated)
- *   - Relative time ("2 min ago")
- *
- * This answers: "What has the AI flagged recently?"
- */
-
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
 import { getAlerts } from "@/lib/api";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+import { BlurFade } from "@/components/ui/blur-fade";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SeverityBadge } from "@/components/shared/severity-badge";
 import { RelativeTime } from "@/components/shared/relative-time";
@@ -37,57 +16,64 @@ export function RecentAlertsList() {
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-28" />
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-12 w-full" />
-        </CardContent>
-      </Card>
+      <div className="flex flex-col gap-3">
+        {[...Array(3)].map((_, i) => (
+          <Skeleton key={i} className="h-16 w-full rounded-lg" />
+        ))}
+      </div>
     );
   }
 
   const alerts = data ?? [];
 
+  if (alerts.length === 0) {
+    return (
+      <div className="rounded-lg border border-border/30 py-12 text-center">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/40">
+          No alerts recorded
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Recent Alerts</CardTitle>
-        <CardDescription>Last 5 AI-flagged events</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {alerts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No alerts yet</p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {alerts.map((alert, i) => (
-              <div key={alert.id}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <SeverityBadge severity={alert.severity} />
-                      <span className="text-sm font-medium">
-                        {alert.event_type} #{alert.track_id}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
-                      {alert.reason}
-                    </p>
-                  </div>
-                  <RelativeTime
-                    timestamp={alert.created_at}
-                    className="shrink-0 text-xs text-muted-foreground"
-                  />
-                </div>
-                {i < alerts.length - 1 && <Separator className="mt-3" />}
+    <div className="flex flex-col gap-2">
+      {alerts.map((alert, i) => (
+        <BlurFade key={alert.id} delay={i * 0.08} direction="up" offset={4}>
+          <div className="group flex items-start gap-4 rounded-lg border border-border/30 p-4 transition-colors hover:border-border/60 hover:bg-card/50">
+            {/* Severity indicator — a thin vertical line */}
+            <div
+              className={`mt-1 h-8 w-0.5 shrink-0 rounded-full ${
+                alert.severity === "high"
+                  ? "bg-destructive"
+                  : alert.severity === "medium"
+                    ? "bg-warning"
+                    : "bg-muted-foreground/30"
+              }`}
+            />
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <SeverityBadge severity={alert.severity} />
+                <span className="font-mono text-[10px] text-muted-foreground/60">
+                  {alert.event_type}
+                </span>
+                <span className="font-mono text-[10px] text-muted-foreground/40">
+                  #{alert.track_id}
+                </span>
               </div>
-            ))}
+              <p className="mt-1.5 text-sm font-light leading-relaxed text-foreground/70 line-clamp-1">
+                {alert.reason}
+              </p>
+            </div>
+
+            <RelativeTime
+              timestamp={alert.created_at}
+              className="shrink-0 font-mono text-[10px] text-muted-foreground/40"
+            />
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </BlurFade>
+      ))}
+    </div>
   );
 }

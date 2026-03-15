@@ -1,23 +1,10 @@
-/**
- * Severity badge — color-coded indicator for alert severity levels.
- *
- * Maps severity strings from the backend to shadcn Badge variants:
- *   high   → destructive (red)  — urgent, needs immediate attention
- *   medium → warning (amber)    — warrants attention
- *   low    → secondary (muted)  — probably harmless
- *   ignore → outline (border)   — normal activity
- *
- * Used on: Overview (recent alerts), Alerts page, Events page.
- */
-
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-const severityConfig: Record<string, { variant: "destructive" | "secondary" | "outline"; className?: string; label: string }> = {
-  high:   { variant: "destructive", label: "High" },
-  medium: { variant: "secondary", className: "bg-warning/15 text-warning", label: "Medium" },
-  low:    { variant: "secondary", label: "Low" },
-  ignore: { variant: "outline", label: "Ignore" },
+const severityConfig: Record<string, { bg: string; text: string; label: string }> = {
+  high:   { bg: "bg-destructive/15", text: "text-destructive", label: "High" },
+  medium: { bg: "bg-warning/15", text: "text-warning", label: "Medium" },
+  low:    { bg: "bg-muted", text: "text-muted-foreground", label: "Low" },
+  ignore: { bg: "bg-transparent", text: "text-muted-foreground/50", label: "Ignore" },
 };
 
 interface SeverityBadgeProps {
@@ -29,11 +16,15 @@ export function SeverityBadge({ severity, className }: SeverityBadgeProps) {
   const config = severityConfig[severity] ?? severityConfig.ignore;
 
   return (
-    <Badge
-      variant={config.variant}
-      className={cn(config.className, className)}
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider",
+        config.bg,
+        config.text,
+        className,
+      )}
     >
       {config.label}
-    </Badge>
+    </span>
   );
 }

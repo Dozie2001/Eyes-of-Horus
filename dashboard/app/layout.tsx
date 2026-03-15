@@ -1,19 +1,21 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Mono, DM_Sans } from "next/font/google";
 import "./globals.css";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Providers } from "@/components/providers";
 import { AppSidebar } from "@/components/app-sidebar";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const dmSans = DM_Sans({
+  variable: "--font-sans",
   subsets: ["latin"],
+  weight: ["300", "400", "500", "600"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-mono",
   subsets: ["latin"],
+  weight: ["300", "400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -21,37 +23,26 @@ export const metadata: Metadata = {
   description: "AI CCTV Monitoring Dashboard",
 };
 
-/**
- * Root layout — wraps every page in the app.
- *
- * Structure:
- *   Providers (QueryClient + Sidebar + Tooltip + Toaster)
- *     ├── AppSidebar (left nav, collapses on mobile)
- *     └── main content area
- *           ├── SidebarTrigger (hamburger button, visible on mobile)
- *           └── {children} (the current page)
- *
- * Providers is a client component that bundles all context providers.
- * This layout stays as a server component (better for performance).
- */
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${dmSans.variable} ${ibmPlexMono.variable} antialiased`}
       >
         <Providers>
           <AppSidebar />
           <main className="flex-1 overflow-auto">
-            <div className="flex items-center gap-2 border-b p-2 md:hidden">
+            <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3 md:hidden">
               <SidebarTrigger />
-              <span className="text-sm font-medium">Eyes of Horus</span>
+              <span className="font-mono text-xs tracking-[0.2em] uppercase text-muted-foreground">
+                Eyes of Horus
+              </span>
             </div>
-            <div className="p-4 md:p-6">
+            <div className="p-5 md:p-8 lg:p-10">
               {children}
             </div>
           </main>
