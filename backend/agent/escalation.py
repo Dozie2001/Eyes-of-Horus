@@ -24,6 +24,8 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from agent.decisions import DecisionStorage
+
 
 class EscalationManager:
     """
@@ -47,6 +49,7 @@ class EscalationManager:
         self._esc_config = config.escalation
         self._telegram = telegram
         self._storage = EscalationStorage(db_path)
+        self._decisions = DecisionStorage(db_path)
         self._roles_db = role_storage
 
         # Build lookup tables from config
@@ -264,6 +267,16 @@ class EscalationManager:
                 self._storage.advance_level(alert_id, next_escalation_at=next_esc_at)
                 continue
 
+            # Look up original AI reason from the decision that triggered this alert
+            original_reason = "Unacknowledged alert"
+            original_recommendation = "Please acknowledge this alert"
+            decision_id = alert_data.get("decision_id")
+            if decision_id:
+                decision = self._decisions.get_by_id(decision_id)
+                if decision:
+                    original_reason = decision.get("reason", original_reason)
+                    original_recommendation = decision.get("recommendation", original_recommendation)
+
             new_msg_ids = {}
             for member in members:
                 chat_id = member["telegram_chat_id"]
@@ -272,8 +285,8 @@ class EscalationManager:
                     event_type=alert_data["event_type"],
                     track_id=alert_data["track_id"],
                     severity=severity,
-                    reason=f"[ESCALATED] Unacknowledged alert — escalated to {next_step.role}",
-                    recommendation="Please acknowledge this alert",
+                    reason=f"[ESCALATED to {next_step.role}] {original_reason}",
+                    recommendation=original_recommendation,
                     snapshot_path=alert_data.get("snapshot_path") or None,
                     video_path=alert_data.get("video_path") or None,
                     ack_callback_data=f"ack:{alert_id}",

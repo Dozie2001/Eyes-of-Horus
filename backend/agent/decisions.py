@@ -107,6 +107,14 @@ class DecisionStorage:
             ).all()
             return [self._to_dict(d) for d in decisions]
 
+    def get_by_id(self, decision_id):
+        """Get a single decision by ID."""
+        with Session(self.engine) as session:
+            decision = session.get(AgentDecision, decision_id)
+            if decision is None:
+                return None
+            return self._to_dict(decision)
+
     def get_alerts_only(self, limit=50, camera_id=None):
         """Get only decisions where alert=True."""
         with Session(self.engine) as session:
