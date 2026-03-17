@@ -9,6 +9,8 @@ Run:
     uvicorn main:app --reload --port 8000
 """
 
+import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -434,6 +437,42 @@ def get_alert_quality_metrics(
         raise HTTPException(status_code=503, detail="Escalation not enabled")
 
     return escalation.storage.get_outcome_stats(days=days, camera_id=camera_id)
+
+
+# --- Live camera stream ---
+
+@app.get("/cameras/{camera_id}/stream")
+async def camera_stream(camera_id: str):
+    """MJPEG stream of the live camera feed.
+
+    Returns a multipart/x-mixed-replace response — the browser (or an <img> tag)
+    renders each JPEG frame as it arrives, creating a live video effect.
+
+    Frame rate is capped at ~10fps to keep bandwidth reasonable.
+    """
+    runners = app.state.runners
+    runner = runners.get(camera_id)
+    if runner is None:
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
+    if runner.status != "running":
+        raise HTTPException(status_code=503, detail=f"Camera '{camera_id}' is {runner.status}")
+
+    async def generate():
+        while True:
+            jpeg_bytes = runner.get_current_frame()
+            if jpeg_bytes is not None:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + jpeg_bytes
+                    + b"\r\n"
+                )
+            await asyncio.sleep(0.1)  # ~10fps
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 # --- Static file mount for snapshots ---

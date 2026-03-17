@@ -87,6 +87,18 @@ class PipelineRunner:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
+    def get_current_frame(self):
+        """Get the latest frame from the pipeline (thread-safe read).
+
+        Returns the raw frame as JPEG bytes, or None if no frame available.
+        Used by the MJPEG streaming endpoint.
+        """
+        frame = getattr(self, '_current_frame', None)
+        if frame is None:
+            return None
+        _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        return buf.tobytes()
+
     def _run_loop(self, storage):
         """The detection loop. Runs in its own thread."""
         try:
@@ -169,6 +181,13 @@ class PipelineRunner:
                 from events.tracker import EVENT_DEPARTED
                 bus.on(EVENT_DEPARTED, lambda data: scene_memory.record_departure(data))
 
+            # Initialize frame ring buffer (5 seconds of frames)
+            # Must be before EvalAgent so the agent can snapshot it for alert clips
+            self._source_fps = max(camera.fps, 10) or 15
+            self._frame_size = (camera.width, camera.height)
+            buffer_frames = int(5 * self._source_fps)
+            self._frame_buffer = collections.deque(maxlen=buffer_frames)
+
             self._eval_agent = None
             if self.config.agent.enabled:
                 redis_client = r if self.config.redis.enabled and scene_memory else None
@@ -180,16 +199,12 @@ class PipelineRunner:
                     escalation=self._escalation,
                     camera_id=self.camera_id,
                     profile_storage=self._profile_storage,
+                    frame_buffer=self._frame_buffer,
+                    source_fps=self._source_fps,
                 )
                 agent.subscribe(bus)
                 agent.start()
                 self._eval_agent = agent
-
-            # Initialize frame ring buffer (5 seconds of frames)
-            self._source_fps = max(camera.fps, 10) or 15
-            self._frame_size = (camera.width, camera.height)
-            buffer_frames = int(5 * self._source_fps)
-            self._frame_buffer = collections.deque(maxlen=buffer_frames)
 
             camera.warm_up()
             self.status = "running"
@@ -258,7 +273,8 @@ class PipelineRunner:
                 return
 
             cam_id = event_data.get("camera_id", self.camera_id)
-            events_dir = f"data/events/{cam_id}"
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            events_dir = os.path.join(project_root, "data", "events", cam_id)
             os.makedirs(events_dir, exist_ok=True)
             bbox = event_data.get("bbox")
             track_id = event_data.get("track_id", 0)
@@ -331,7 +347,9 @@ class PipelineRunner:
         """
         import cv2
 
-        tmp_path = path + ".tmp"
+        # Use .tmp.mp4 (not .mp4.tmp) — cv2.VideoWriter uses the extension
+        # to determine container format, so it must end in .mp4
+        tmp_path = path.replace(".mp4", ".tmp.mp4")
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
 

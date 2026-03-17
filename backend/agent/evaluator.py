@@ -60,7 +60,8 @@ class EvalAgent:
     """
 
     def __init__(self, config, storage, scene_memory=None, redis_client=None,
-                 escalation=None, camera_id="cam1", profile_storage=None):
+                 escalation=None, camera_id="cam1", profile_storage=None,
+                 frame_buffer=None, source_fps=15):
         """
         Args:
             config: StangWatchConfig
@@ -70,6 +71,8 @@ class EvalAgent:
             escalation: EscalationManager instance (or None for simple sends)
             camera_id: identifier for this camera
             profile_storage: CameraProfileStorage for per-camera context (or None)
+            frame_buffer: deque of recent frames from the pipeline (for alert clips)
+            source_fps: camera FPS (for writing clips at correct speed)
         """
         self.config = config
         self.storage = storage
@@ -77,8 +80,10 @@ class EvalAgent:
         self.redis = redis_client
         self.camera_id = camera_id
         self._profile_storage = profile_storage
+        self._frame_buffer = frame_buffer
+        self._source_fps = source_fps
 
-        # Ollama text client (reasoning + decisions)
+        # Ollama text client
         self._ollama = OllamaClient(
             model=config.agent.model,
             host=config.agent.ollama_host,
@@ -134,7 +139,6 @@ class EvalAgent:
 
         # Cooldown tracking
         self._cooldown_seconds = config.agent.cooldown_seconds
-        # In-memory fallback if Redis is unavailable
         self._memory_cooldowns = {}
 
         # Feedback cache (refreshed every FEEDBACK_CACHE_TTL seconds)
@@ -182,17 +186,26 @@ class EvalAgent:
         return self._decisions
 
     def _enqueue(self, event_type, event_data):
-        """Add an event to the evaluation queue (non-blocking)."""
+        """Add an event to the evaluation queue (non-blocking).
+
+        Snapshots the frame buffer at enqueue time so we can write a clip
+        later if the AI decides to alert. This captures the right moment
+        (not 1-3s later when inference finishes).
+        """
+        frames_snapshot = None
+        if self._frame_buffer and len(self._frame_buffer) > 10:
+            frames_snapshot = list(self._frame_buffer)
+
+        item = (event_type, event_data, frames_snapshot)
         try:
-            self._queue.put_nowait((event_type, event_data))
+            self._queue.put_nowait(item)
         except queue.Full:
-            # Queue full — Ollama is falling behind, drop oldest
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 pass
             try:
-                self._queue.put_nowait((event_type, event_data))
+                self._queue.put_nowait(item)
             except queue.Full:
                 pass
 
@@ -208,7 +221,7 @@ class EvalAgent:
             if item is None:
                 break
 
-            event_type, event_data = item
+            event_type, event_data, frames_snapshot = item
 
             # Check cooldown — skip if we recently evaluated this track
             track_id = event_data.get("track_id", 0)
@@ -285,6 +298,12 @@ class EvalAgent:
             if alert and severity in ("medium", "high"):
                 # Set cooldown so we don't spam
                 self._set_cooldown(track_id)
+
+                # Write alert clip from the frame buffer snapshot (if no clip already exists)
+                if video_path is None and frames_snapshot:
+                    video_path = self._write_alert_clip(
+                        event_type, event_data, frames_snapshot,
+                    )
 
                 # Route through escalation if configured, otherwise simple send
                 if self._escalation and self._escalation.is_configured():
@@ -410,6 +429,55 @@ class EvalAgent:
 
         # Fallback to in-memory
         self._memory_cooldowns[track_id] = time.time() + self._cooldown_seconds
+
+    def _write_alert_clip(self, event_type, event_data, frames):
+        """
+        Write a video clip from a frame buffer snapshot. Called only when
+        the AI decides to alert and no clip already exists.
+
+        Writes synchronously (we're already in the worker thread, not the
+        pipeline thread) so the clip is ready before sending to Telegram.
+
+        Returns:
+            str: path to the written clip, or None on failure
+        """
+        import cv2
+
+        try:
+            ts = datetime.fromisoformat(event_data["timestamp"])
+            ts_str = ts.strftime("%Y%m%d_%H%M%S")
+            track_id = event_data.get("track_id", 0)
+            cam_id = event_data.get("camera_id", self.camera_id)
+
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            events_dir = os.path.join(project_root, "data", "events", cam_id)
+            os.makedirs(events_dir, exist_ok=True)
+
+            filename = f"alert_{ts_str}_track{track_id}_{event_type}.mp4"
+            path = os.path.join(events_dir, filename)
+            tmp_path = path.replace(".mp4", ".tmp.mp4")
+
+            output_fps = min(self._source_fps, 15)
+            step = max(1, round(self._source_fps / output_fps))
+
+            h, w = frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(tmp_path, fourcc, output_fps, (w, h))
+
+            for i, frame in enumerate(frames):
+                if i % step == 0:
+                    writer.write(frame)
+
+            writer.release()
+            os.rename(tmp_path, path)
+            print(f"  CLIP: Alert clip saved {path} ({len(frames)} frames)")
+            return path
+
+        except Exception as e:
+            print(f"  CLIP: Failed to write alert clip: {e}")
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return None
 
     def _find_video(self, event_type, event_data):
         """

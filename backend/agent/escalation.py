@@ -93,6 +93,10 @@ class EscalationManager:
         if self._running or not self.is_configured():
             return
 
+        # Flush old Telegram updates so we don't replay stale callbacks
+        # from previous server sessions (which would auto-acknowledge alerts)
+        self._flush_old_updates()
+
         self._running = True
 
         self._timeout_thread = threading.Thread(
@@ -110,6 +114,23 @@ class EscalationManager:
         self._poller_thread.start()
 
         print("EscalationManager started (timeout checker + Telegram poller)")
+
+    def _flush_old_updates(self):
+        """Skip all pending Telegram updates on startup.
+
+        Without this, restarting the server replays old button presses
+        and auto-acknowledges alerts the user didn't actually press.
+        """
+        try:
+            updates = self._telegram.get_updates(offset=0)
+            if updates:
+                last_id = max(u.get("update_id", 0) for u in updates)
+                self._update_offset = last_id + 1
+                print(f"  ESCALATION: Flushed {len(updates)} old Telegram updates")
+            else:
+                print("  ESCALATION: No old Telegram updates to flush")
+        except Exception as e:
+            print(f"  ESCALATION: Could not flush old updates: {e}")
 
     def stop(self):
         """Stop background threads."""
