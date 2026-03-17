@@ -19,15 +19,17 @@ interface AlertCardProps {
   alert: EscalationAlert;
   onAcknowledge?: (id: number) => void;
   onDismiss?: (id: number) => void;
+  onClick?: () => void;
   readOnly?: boolean;
 }
 
-export function AlertCard({ alert, onAcknowledge, onDismiss, readOnly = false }: AlertCardProps) {
+export function AlertCard({ alert, onAcknowledge, onDismiss, onClick, readOnly = false }: AlertCardProps) {
   const isPending = alert.status === "pending";
 
   return (
     <div
-      className={`border-l-2 rounded-lg border border-border transition-all hover:border-border hover:bg-card/40 ${borderAccent(alert.severity)} ${
+      onClick={onClick}
+      className={`border-l-2 rounded-lg border border-border cursor-pointer transition-all hover:border-border hover:bg-card/40 ${borderAccent(alert.severity)} ${
         isPending && alert.severity === "high" ? "animate-pulse-subtle" : ""
       }`}
     >
@@ -76,7 +78,7 @@ export function AlertCard({ alert, onAcknowledge, onDismiss, readOnly = false }:
 
           {/* Actions — generous touch targets */}
           {isPending && !readOnly && (
-            <div className="mt-auto flex gap-2 pt-1">
+            <div className="mt-auto flex gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
               <Button
                 size="sm"
                 onClick={() => onAcknowledge?.(alert.id)}

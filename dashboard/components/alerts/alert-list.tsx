@@ -36,7 +36,9 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertCard } from "./alert-card";
+import { AlertDetailSheet } from "./alert-detail-sheet";
 import { AlertQualityCard } from "./alert-quality-card";
+import type { EscalationAlert } from "@/lib/types";
 
 export function AlertList() {
   // useQueryClient gives us access to the cache — we use it to
@@ -86,6 +88,7 @@ export function AlertList() {
 
   // State for dismiss confirmation dialog
   const [dismissId, setDismissId] = useState<number | null>(null);
+  const [selectedAlert, setSelectedAlert] = useState<EscalationAlert | null>(null);
 
   return (
     <>
@@ -132,6 +135,7 @@ export function AlertList() {
                   <AlertCard
                     key={alert.id}
                     alert={alert}
+                    onClick={() => setSelectedAlert(alert)}
                     onAcknowledge={(id) => ackMutation.mutate(id)}
                     onDismiss={(id) => setDismissId(id)}
                   />
@@ -163,6 +167,7 @@ export function AlertList() {
                   <AlertCard
                     key={alert.id}
                     alert={alert}
+                    onClick={() => setSelectedAlert(alert)}
                     readOnly
                   />
                 ))}
@@ -195,6 +200,13 @@ export function AlertList() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Alert detail sheet — opens when clicking a card */}
+      <AlertDetailSheet
+        alert={selectedAlert}
+        open={selectedAlert !== null}
+        onClose={() => setSelectedAlert(null)}
+      />
     </>
   );
 }

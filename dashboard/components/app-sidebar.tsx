@@ -8,6 +8,7 @@ import {
   Activity,
   Camera,
   Settings,
+  Video,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import {
@@ -24,6 +25,7 @@ import {
 
 const navItems = [
   { title: "Overview", href: "/", icon: LayoutDashboard },
+  { title: "Live View", href: "/live", icon: Video },
   { title: "Alerts", href: "/alerts", icon: Bell },
   { title: "Events", href: "/events", icon: Activity },
   { title: "Cameras", href: "/cameras", icon: Camera },

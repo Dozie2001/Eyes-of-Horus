@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -10,6 +11,16 @@ interface ThemeToggleProps {
 
 export function ThemeToggle({ className }: ThemeToggleProps) {
   const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  // Wait until after hydration to render theme-dependent UI
+  useEffect(() => setMounted(true), []);
+
+  if (!mounted) {
+    // Placeholder with same dimensions to prevent layout shift
+    return <div className={cn("h-7 w-14 rounded-full border border-border bg-secondary", className)} />;
+  }
+
   const isDark = resolvedTheme === "dark";
 
   return (
