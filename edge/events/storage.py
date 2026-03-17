@@ -33,6 +33,7 @@ from sqlmodel import SQLModel, Field, Session, create_engine, select
 class Track(SQLModel, table=True):
     """One row per tracked person (scoped by camera)."""
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     camera_id: str = Field(default="cam1", index=True)
     bytetrack_id: int = Field(index=True)
     first_seen: datetime
@@ -42,6 +43,7 @@ class Track(SQLModel, table=True):
 class Event(SQLModel, table=True):
     """One row per detection event."""
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     camera_id: str = Field(default="cam1", index=True)
     event_type: str = Field(index=True)
     track_id: int = Field(foreign_key="track.id", index=True)
@@ -53,6 +55,7 @@ class Event(SQLModel, table=True):
     snapshot_path: str | None = None
     extra: dict = Field(sa_column=Column(JSON, nullable=False, default={}))
     created_at: datetime = Field(default_factory=datetime.now)
+    synced_at: datetime | None = None
 
 
 # All event types (must match events/tracker.py)
@@ -73,8 +76,9 @@ class EventStorage:
     Provides query methods for the dashboard API.
     """
 
-    def __init__(self, db_path="data/stangwatch.db"):
+    def __init__(self, db_path="data/stangwatch.db", site_id="default"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.site_id = site_id
 
         self.engine = create_engine(
             f"sqlite:///{db_path}",
@@ -89,6 +93,29 @@ class EventStorage:
             cursor.close()
 
         SQLModel.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns that don't exist yet (SQLModel create_all won't do this)."""
+        from sqlalchemy import text
+
+        with self.engine.connect() as conn:
+            # Migrate track table
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(track)"))}
+            if "site_id" not in existing:
+                conn.execute(text("ALTER TABLE track ADD COLUMN site_id TEXT NOT NULL DEFAULT 'default'"))
+
+            # Migrate event table
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(event)"))}
+            migrations = [
+                ("site_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("synced_at", "TEXT"),
+            ]
+            for col_name, col_def in migrations:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE event ADD COLUMN {col_name} {col_def}"))
+
+            conn.commit()
 
     def save_event(self, event_type, event_data, snapshot_path=None):
         """
@@ -119,6 +146,7 @@ class EventStorage:
 
             if track is None:
                 track = Track(
+                    site_id=self.site_id,
                     camera_id=camera_id,
                     bytetrack_id=bytetrack_id,
                     first_seen=first_seen,
@@ -137,6 +165,7 @@ class EventStorage:
             extra = {k: v for k, v in event_data.items() if k not in known_fields}
 
             event = Event(
+                site_id=self.site_id,
                 camera_id=camera_id,
                 event_type=event_type,
                 track_id=track.id,
@@ -238,4 +267,6 @@ class EventStorage:
             "snapshot_path": event.snapshot_path,
             "extra": event.extra,
             "created_at": event.created_at.isoformat(),
+            "site_id": event.site_id,
+            "synced_at": event.synced_at.isoformat() if event.synced_at else None,
         }

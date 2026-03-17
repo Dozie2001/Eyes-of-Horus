@@ -23,6 +23,7 @@ class RoleMembership(SQLModel, table=True):
     __tablename__ = "role_membership"
 
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     role: str = Field(index=True)               # guard, supervisor, admin
     telegram_chat_id: str = Field(index=True)
     telegram_username: str = ""
@@ -37,6 +38,7 @@ class InviteCode(SQLModel, table=True):
     __tablename__ = "invite_code"
 
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     code: str = Field(index=True, unique=True)
     role: str                                 
     created_by_chat_id: str
@@ -56,8 +58,9 @@ def _generate_code() -> str:
 class RoleStorage:
     """Manages role memberships and invite codes in SQLite."""
 
-    def __init__(self, db_path="data/stangwatch.db"):
+    def __init__(self, db_path="data/stangwatch.db", site_id="default"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.site_id = site_id
 
         self.engine = create_engine(
             f"sqlite:///{db_path}",
@@ -71,7 +74,24 @@ class RoleStorage:
             cursor.close()
 
         SQLModel.metadata.create_all(self.engine)
+        self._migrate()
 
+    def _migrate(self):
+        """Add columns that don't exist yet (SQLModel create_all won't do this)."""
+        from sqlalchemy import text
+
+        with self.engine.connect() as conn:
+            # Migrate role_membership table
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(role_membership)"))}
+            if "site_id" not in existing:
+                conn.execute(text("ALTER TABLE role_membership ADD COLUMN site_id TEXT NOT NULL DEFAULT 'default'"))
+
+            # Migrate invite_code table
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(invite_code)"))}
+            if "site_id" not in existing:
+                conn.execute(text("ALTER TABLE invite_code ADD COLUMN site_id TEXT NOT NULL DEFAULT 'default'"))
+
+            conn.commit()
 
     def bootstrap_admin(self, chat_id, username="owner"):
         """
@@ -361,6 +381,7 @@ class RoleStorage:
     def _member_to_dict(self, member):
         return {
             "id": member.id,
+            "site_id": member.site_id,
             "role": member.role,
             "telegram_chat_id": member.telegram_chat_id,
             "telegram_username": member.telegram_username,
@@ -373,6 +394,7 @@ class RoleStorage:
     def _invite_to_dict(self, invite):
         return {
             "id": invite.id,
+            "site_id": invite.site_id,
             "code": invite.code,
             "role": invite.role,
             "created_by_chat_id": invite.created_by_chat_id,

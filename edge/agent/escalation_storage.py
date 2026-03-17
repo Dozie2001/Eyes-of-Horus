@@ -22,6 +22,7 @@ class EscalationAlert(SQLModel, table=True):
     __tablename__ = "escalation_alert"
 
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     camera_id: str = Field(default="cam1", index=True)
     decision_id: int = Field(index=True)        # links to AgentDecision.id
     event_type: str
@@ -39,6 +40,7 @@ class EscalationAlert(SQLModel, table=True):
     video_path: str = ""
     next_escalation_at: Optional[datetime] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.now, index=True)
+    synced_at: datetime | None = None
 
     def get_message_ids(self) -> dict:
         """Parse telegram_message_ids JSON string."""
@@ -54,8 +56,9 @@ class EscalationAlert(SQLModel, table=True):
 class EscalationStorage:
     """Manages SQLite storage for escalation alerts."""
 
-    def __init__(self, db_path="data/stangwatch.db"):
+    def __init__(self, db_path="data/stangwatch.db", site_id="default"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.site_id = site_id
 
         self.engine = create_engine(
             f"sqlite:///{db_path}",
@@ -79,6 +82,8 @@ class EscalationStorage:
                 ("outcome", "TEXT NOT NULL DEFAULT 'unresolved'"),
                 ("dismissed_by", "TEXT NOT NULL DEFAULT ''"),
                 ("camera_id", "TEXT NOT NULL DEFAULT 'cam1'"),
+                ("site_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("synced_at", "TEXT"),
             ]
             for col_name, col_def in migrations:
                 if col_name not in existing:
@@ -87,7 +92,7 @@ class EscalationStorage:
 
     def save_alert(self, decision_id, event_type, track_id, severity,
                    max_level, snapshot_path="", video_path="",
-                   next_escalation_at=None, camera_id="cam1"):
+                   next_escalation_at=None, camera_id="cam1", site_id=None):
         """
         Save a new escalation alert as pending.
 
@@ -95,6 +100,7 @@ class EscalationStorage:
             int: the alert row ID
         """
         alert = EscalationAlert(
+            site_id=site_id or self.site_id,
             camera_id=camera_id,
             decision_id=decision_id,
             event_type=event_type,
@@ -370,4 +376,6 @@ class EscalationStorage:
             "video_path": alert.video_path,
             "next_escalation_at": alert.next_escalation_at.isoformat() if alert.next_escalation_at else None,
             "created_at": alert.created_at.isoformat(),
+            "site_id": alert.site_id,
+            "synced_at": alert.synced_at.isoformat() if alert.synced_at else None,
         }

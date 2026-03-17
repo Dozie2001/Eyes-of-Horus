@@ -158,6 +158,15 @@ class StorageConfig(BaseModel):
     cloud_url: str = ""
 
 
+class CloudConfig(BaseModel):
+    """Cloud sync settings for SaaS mode."""
+    enabled: bool = False
+    api_url: str = ""        # https://api.eyesofhorus.com
+    api_key: str = ""        # device API key (sk_device_xxx)
+    sync_interval: int = 30  # seconds between sync cycles
+    heartbeat_interval: int = 60  # seconds between heartbeat pushes
+
+
 class AgentConfig(BaseModel):
     """AI evaluation agent settings."""
     enabled: bool = True
@@ -221,6 +230,7 @@ class StangWatchConfig(BaseModel):
     tracking: TrackingConfig = TrackingConfig()
     redis: RedisConfig = RedisConfig()
     storage: StorageConfig = StorageConfig()
+    cloud: CloudConfig = CloudConfig()
     alerts: AlertConfig = AlertConfig()
     agent: AgentConfig = AgentConfig()
     escalation: EscalationConfig = EscalationConfig()
@@ -308,7 +318,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -340,6 +350,11 @@ def get_config(
             }
         ),
         storage=StorageConfig(**raw.get("storage", {})),
+        cloud=CloudConfig(**{
+            **raw.get("cloud", {}),
+            **({"api_url": env["CLOUD_API_URL"]} if env.get("CLOUD_API_URL") else {}),
+            **({"api_key": env["CLOUD_API_KEY"]} if env.get("CLOUD_API_KEY") else {}),
+        }),
         alerts=AlertConfig(**raw.get("alerts", {})),
         agent=AgentConfig(**raw.get("agent", {})),
         escalation=_parse_escalation(raw.get("escalation", {})),

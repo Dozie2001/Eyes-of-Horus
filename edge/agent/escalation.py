@@ -20,11 +20,14 @@ Usage:
     manager.stop()
 """
 
+import logging
 import threading
 import time
 from datetime import datetime, timedelta
 
 from agent.decisions import DecisionStorage
+
+logger = logging.getLogger(__name__)
 
 
 class EscalationManager:
@@ -36,20 +39,21 @@ class EscalationManager:
     2. Telegram poller (every 3s) — receives button presses + bot commands
     """
 
-    def __init__(self, config, telegram, db_path, role_storage):
+    def __init__(self, config, telegram, db_path, role_storage, site_id="default"):
         """
         Args:
             config: StangWatchConfig (reads config.escalation)
             telegram: TelegramSender instance
             db_path: path to SQLite database
             role_storage: RoleStorage instance for looking up role members
+            site_id: site identifier for multi-site support
         """
         from agent.escalation_storage import EscalationStorage
 
         self._esc_config = config.escalation
         self._telegram = telegram
-        self._storage = EscalationStorage(db_path)
-        self._decisions = DecisionStorage(db_path)
+        self._storage = EscalationStorage(db_path, site_id=site_id)
+        self._decisions = DecisionStorage(db_path, site_id=site_id)
         self._roles_db = role_storage
 
         # Build lookup tables from config
@@ -113,7 +117,7 @@ class EscalationManager:
         )
         self._poller_thread.start()
 
-        print("EscalationManager started (timeout checker + Telegram poller)")
+        logger.info("EscalationManager started (timeout checker + Telegram poller)")
 
     def _flush_old_updates(self):
         """Skip all pending Telegram updates on startup.
@@ -126,11 +130,11 @@ class EscalationManager:
             if updates:
                 last_id = max(u.get("update_id", 0) for u in updates)
                 self._update_offset = last_id + 1
-                print(f"  ESCALATION: Flushed {len(updates)} old Telegram updates")
+                logger.debug(f"  ESCALATION: Flushed {len(updates)} old Telegram updates")
             else:
-                print("  ESCALATION: No old Telegram updates to flush")
+                logger.debug("  ESCALATION: No old Telegram updates to flush")
         except Exception as e:
-            print(f"  ESCALATION: Could not flush old updates: {e}")
+            logger.warning(f"  ESCALATION: Could not flush old updates: {e}")
 
     def stop(self):
         """Stop background threads."""
@@ -139,7 +143,7 @@ class EscalationManager:
             self._timeout_thread.join(timeout=5)
         if self._poller_thread is not None:
             self._poller_thread.join(timeout=5)
-        print("EscalationManager stopped")
+        logger.info("EscalationManager stopped")
 
     def escalate(self, decision_id, event_type, track_id, severity,
                  reason, recommendation="", description="",
@@ -152,7 +156,7 @@ class EscalationManager:
         """
         policy = self._policies.get(severity)
         if policy is None:
-            print(f"  ESCALATION: No policy for severity '{severity}', skipping")
+            logger.debug(f"  ESCALATION: No policy for severity '{severity}', skipping")
             return None
 
         chain = policy.chain
@@ -182,7 +186,7 @@ class EscalationManager:
         role_name = first_step.role
         members = self._roles_db.get_active_members(role_name)
         if not members:
-            print(f"  ESCALATION: No active members for role '{role_name}'")
+            logger.debug(f"  ESCALATION: No active members for role '{role_name}'")
             return alert_id
 
         msg_ids = {}
@@ -209,7 +213,7 @@ class EscalationManager:
             self._storage.update_message_ids(alert_id, msg_ids)
 
         timeout_str = f", escalates in {first_step.timeout_minutes}m" if first_step.timeout_minutes > 0 else ""
-        print(f"  ESCALATION: Alert #{alert_id} sent to {len(members)} {role_name}(s) ({severity}){timeout_str}")
+        logger.debug(f"  ESCALATION: Alert #{alert_id} sent to {len(members)} {role_name}(s) ({severity}){timeout_str}")
 
         return alert_id
 
@@ -224,7 +228,7 @@ class EscalationManager:
             return None
 
         self._edit_messages_acknowledged(alert_data, username)
-        print(f"  ESCALATION: Alert #{alert_id} acknowledged by {username}")
+        logger.debug(f"  ESCALATION: Alert #{alert_id} acknowledged by {username}")
         return alert_data
 
     def dismiss(self, alert_id, username="api"):
@@ -238,7 +242,7 @@ class EscalationManager:
             return None
 
         self._edit_messages_dismissed(alert_data, username)
-        print(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by {username}")
+        logger.debug(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by {username}")
         return alert_data
 
     # --- Background loops ---
@@ -249,7 +253,7 @@ class EscalationManager:
             try:
                 self._check_timeouts()
             except Exception as e:
-                print(f"  ESCALATION: Timeout check error: {e}")
+                logger.error(f"  ESCALATION: Timeout check error: {e}")
             for _ in range(30):
                 if not self._running:
                     return
@@ -273,7 +277,7 @@ class EscalationManager:
 
             if next_level >= len(chain):
                 self._storage.advance_level(alert_id, next_escalation_at=None)
-                print(f"  ESCALATION: Alert #{alert_id} reached end of chain")
+                logger.debug(f"  ESCALATION: Alert #{alert_id} reached end of chain")
                 continue
 
             next_step = chain[next_level]
@@ -284,7 +288,7 @@ class EscalationManager:
             # Send to all active members of the next role
             members = self._roles_db.get_active_members(next_step.role)
             if not members:
-                print(f"  ESCALATION: No active members for role '{next_step.role}', skipping")
+                logger.debug(f"  ESCALATION: No active members for role '{next_step.role}', skipping")
                 self._storage.advance_level(alert_id, next_escalation_at=next_esc_at)
                 continue
 
@@ -323,7 +327,7 @@ class EscalationManager:
             )
 
             timeout_str = f", escalates in {next_step.timeout_minutes}m" if next_step.timeout_minutes > 0 else ""
-            print(f"  ESCALATION: Alert #{alert_id} escalated to {len(members)} {next_step.role}(s){timeout_str}")
+            logger.debug(f"  ESCALATION: Alert #{alert_id} escalated to {len(members)} {next_step.role}(s){timeout_str}")
 
     # --- Telegram polling (callbacks + commands) ---
 
@@ -333,7 +337,7 @@ class EscalationManager:
             try:
                 self._poll_updates()
             except Exception as e:
-                print(f"  ESCALATION: Poll error: {e}")
+                logger.error(f"  ESCALATION: Poll error: {e}")
             for _ in range(3):
                 if not self._running:
                     return
@@ -404,7 +408,7 @@ class EscalationManager:
                 text=f"Acknowledged by @{username}",
             )
             self._edit_messages_acknowledged(updated, username)
-            print(f"  ESCALATION: Alert #{alert_id} acknowledged by @{username} via button")
+            logger.debug(f"  ESCALATION: Alert #{alert_id} acknowledged by @{username} via button")
 
         elif action == "dismiss":
             updated = self._storage.mark_dismissed(alert_id, username=username)
@@ -416,7 +420,7 @@ class EscalationManager:
                 text=f"Dismissed by @{username}",
             )
             self._edit_messages_dismissed(updated, username)
-            print(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by @{username} via button")
+            logger.debug(f"  ESCALATION: Alert #{alert_id} dismissed as false alarm by @{username} via button")
 
     def _handle_command(self, message):
         """Route a bot command to the appropriate handler."""
@@ -459,7 +463,7 @@ class EscalationManager:
                 f"Welcome! You've been activated as *{activated['role']}*.\n"
                 f"You will now receive alerts based on your role.",
             )
-            print(f"  ROLES: @{username} activated as {activated['role']} via /start")
+            logger.debug(f"  ROLES: @{username} activated as {activated['role']} via /start")
             return
 
         # Check if already a member
@@ -545,7 +549,7 @@ class EscalationManager:
                 f"Invited {target_username} as *{role_name}*.\n\n"
                 f"Tell them to open this bot and send `/start` to activate.",
             )
-            print(f"  ROLES: @{username} invited {target_username} as {role_name} (pending /start)")
+            logger.debug(f"  ROLES: @{username} invited {target_username} as {role_name} (pending /start)")
             return
 
         # Code-based invite
@@ -558,7 +562,7 @@ class EscalationManager:
             f"`/join {invite['code']}`\n\n"
             f"Expires in 24 hours. Single use.",
         )
-        print(f"  ROLES: @{username} created invite {invite['code']} for {role_name}")
+        logger.debug(f"  ROLES: @{username} created invite {invite['code']} for {role_name}")
 
     def _cmd_join(self, chat_id, username, args):
         """Handle /join <code> — anyone with a valid code."""
@@ -581,7 +585,7 @@ class EscalationManager:
             f"Welcome! You are now registered as *{membership['role']}*.\n"
             f"You will receive alerts based on your role.",
         )
-        print(f"  ROLES: @{username} joined as {membership['role']} (code: {code})")
+        logger.debug(f"  ROLES: @{username} joined as {membership['role']} (code: {code})")
 
     def _cmd_revoke(self, chat_id, username, args):
         """Handle /revoke <@username> — admin only."""
@@ -611,7 +615,7 @@ class EscalationManager:
             f"Revoked access for @{revoked['telegram_username']} "
             f"(was {revoked['role']}). They will no longer receive alerts.",
         )
-        print(f"  ROLES: @{username} revoked @{revoked['telegram_username']}")
+        logger.debug(f"  ROLES: @{username} revoked @{revoked['telegram_username']}")
 
     def _cmd_whoami(self, chat_id):
         """Handle /whoami — show current role."""

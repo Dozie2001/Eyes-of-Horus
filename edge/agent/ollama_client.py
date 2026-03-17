@@ -15,9 +15,12 @@ Usage:
 """
 
 import json
+import logging
 import time
 
 import ollama
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -58,9 +61,9 @@ class OllamaClient:
             available = [m.model for m in models.models]
             self._healthy = self.model in available
             if not self._healthy:
-                print(f"Ollama model '{self.model}' not found. Available: {available}")
+                logger.warning(f"Ollama model '{self.model}' not found. Available: {available}")
         except Exception as e:
-            print(f"Ollama health check failed: {e}")
+            logger.warning(f"Ollama health check failed: {e}")
             self._healthy = False
 
         self._health_checked_at = now
@@ -109,8 +112,8 @@ class OllamaClient:
             return result
 
         except json.JSONDecodeError as e:
-            print(f"Ollama returned invalid JSON: {e}")
+            logger.warning(f"Ollama returned invalid JSON: {e}")
             return None
         except Exception as e:
-            print(f"Ollama evaluation failed: {e}")
+            logger.error(f"Ollama evaluation failed: {e}")
             return None

@@ -17,11 +17,14 @@ Usage:
     agent.stop()
 """
 
+import logging
 import os
 import queue
 import threading
 import time
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from agent.ollama_client import OllamaClient
 from agent.vision import VisionDescriber, GeminiVisionDescriber, GroqVisionDescriber
@@ -97,20 +100,20 @@ class EvalAgent:
                 api_key=config.secrets.groq_api_key,
                 timeout=config.agent.timeout_seconds,
             )
-            print(f"  Vision provider: Groq (Llama 4 Scout)")
+            logger.info("  Vision provider: Groq (Llama 4 Scout)")
         elif vp == "gemini" and config.secrets.gemini_api_key:
             self._vision = GeminiVisionDescriber(
                 api_key=config.secrets.gemini_api_key,
                 timeout=config.agent.timeout_seconds,
             )
-            print(f"  Vision provider: Gemini Flash (cloud)")
+            logger.info("  Vision provider: Gemini Flash (cloud)")
         else:
             self._vision = VisionDescriber(
                 model=config.agent.vision_model,
                 host=config.agent.ollama_host,
                 timeout=config.agent.timeout_seconds,
             )
-            print(f"  Vision provider: Ollama ({config.agent.vision_model})")
+            logger.info(f"  Vision provider: Ollama ({config.agent.vision_model})")
 
         # Decision storage (same database)
         db_path = str(
@@ -166,7 +169,7 @@ class EvalAgent:
             name=f"eval-agent-{self.camera_id}",
         )
         self._thread.start()
-        print(f"[{self.camera_id}] EvalAgent started (model: {self.config.agent.model})")
+        logger.info(f"[{self.camera_id}] EvalAgent started (model: {self.config.agent.model})")
 
     def stop(self):
         """Stop the worker thread."""
@@ -178,7 +181,7 @@ class EvalAgent:
             except queue.Full:
                 pass
             self._thread.join(timeout=5)
-            print("EvalAgent stopped")
+            logger.info("EvalAgent stopped")
 
     @property
     def decision_storage(self):
@@ -230,7 +233,7 @@ class EvalAgent:
 
             # Check Ollama health
             if not self._ollama.is_healthy():
-                print(f"  AGENT: Ollama unavailable, skipping {event_type} for Track #{track_id}")
+                logger.warning(f"  AGENT: Ollama unavailable, skipping {event_type} for Track #{track_id}")
                 continue
 
             # Step 1: Find video clip and snapshot
@@ -275,7 +278,7 @@ class EvalAgent:
             eval_ms = int((time.time() - start_ms) * 1000)
 
             if result is None:
-                print(f"  AGENT: Evaluation failed for {event_type} Track #{track_id}")
+                logger.error(f"  AGENT: Evaluation failed for {event_type} Track #{track_id}")
                 continue
 
             alert = result["alert"]
@@ -320,7 +323,7 @@ class EvalAgent:
                         camera_id=self.camera_id,
                     )
                     status = f"escalated (#{alert_id})" if alert_id else "escalation failed"
-                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | {status} | {eval_ms}ms")
+                    logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | {status} | {eval_ms}ms")
                 elif self._telegram.is_configured():
                     sent = self._telegram.send_alert(
                         event_type=event_type,
@@ -333,11 +336,11 @@ class EvalAgent:
                         video_path=video_path,
                     )
                     status = "sent" if sent else "FAILED"
-                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | Telegram: {status} | {eval_ms}ms")
+                    logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | Telegram: {status} | {eval_ms}ms")
                 else:
-                    print(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
+                    logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
             else:
-                print(f"  AGENT: {severity} | {event_type} Track #{track_id} | {reason[:60]} | {eval_ms}ms")
+                logger.debug(f"  AGENT: {severity} | {event_type} Track #{track_id} | {reason[:60]} | {eval_ms}ms")
 
     def _get_feedback_context(self, event_type):
         """
@@ -470,11 +473,11 @@ class EvalAgent:
 
             writer.release()
             os.rename(tmp_path, path)
-            print(f"  CLIP: Alert clip saved {path} ({len(frames)} frames)")
+            logger.debug(f"  CLIP: Alert clip saved {path} ({len(frames)} frames)")
             return path
 
         except Exception as e:
-            print(f"  CLIP: Failed to write alert clip: {e}")
+            logger.error(f"  CLIP: Failed to write alert clip: {e}")
             if 'tmp_path' in locals() and os.path.exists(tmp_path):
                 os.remove(tmp_path)
             return None

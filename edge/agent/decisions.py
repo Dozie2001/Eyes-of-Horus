@@ -35,6 +35,7 @@ class AgentDecision(SQLModel, table=True):
     __tablename__ = "agent_decision"
 
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     camera_id: str = Field(default="cam1", index=True)
     event_type: str = Field(index=True)
     track_id: int = Field(index=True)
@@ -44,6 +45,7 @@ class AgentDecision(SQLModel, table=True):
     recommendation: str = ""
     eval_duration_ms: int = 0
     created_at: datetime = Field(default_factory=datetime.now, index=True)
+    synced_at: datetime | None = None
 
 
 class DecisionStorage:
@@ -54,8 +56,9 @@ class DecisionStorage:
     gets created automatically if it doesn't exist.
     """
 
-    def __init__(self, db_path="data/stangwatch.db"):
+    def __init__(self, db_path="data/stangwatch.db", site_id="default"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.site_id = site_id
 
         self.engine = create_engine(
             f"sqlite:///{db_path}",
@@ -71,9 +74,26 @@ class DecisionStorage:
 
         # Create only the AgentDecision table if it doesn't exist
         SQLModel.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns that don't exist yet (SQLModel create_all won't do this)."""
+        from sqlalchemy import text
+
+        with self.engine.connect() as conn:
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(agent_decision)"))}
+            migrations = [
+                ("site_id", "TEXT NOT NULL DEFAULT 'default'"),
+                ("synced_at", "TEXT"),
+            ]
+            for col_name, col_def in migrations:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE agent_decision ADD COLUMN {col_name} {col_def}"))
+            conn.commit()
 
     def save_decision(self, event_type, track_id, alert, severity, reason,
-                      recommendation="", eval_duration_ms=0, camera_id="cam1"):
+                      recommendation="", eval_duration_ms=0, camera_id="cam1",
+                      site_id=None):
         """
         Save one evaluation decision.
 
@@ -81,6 +101,7 @@ class DecisionStorage:
             int: the decision row ID
         """
         decision = AgentDecision(
+            site_id=site_id or self.site_id,
             camera_id=camera_id,
             event_type=event_type,
             track_id=track_id,
@@ -139,4 +160,6 @@ class DecisionStorage:
             "recommendation": decision.recommendation,
             "eval_duration_ms": decision.eval_duration_ms,
             "created_at": decision.created_at.isoformat(),
+            "site_id": decision.site_id,
+            "synced_at": decision.synced_at.isoformat() if decision.synced_at else None,
         }

@@ -5,14 +5,17 @@ Serves the event API and runs the detection pipeline in a background thread.
 The pipeline writes events to SQLite, the API reads and serves them.
 
 Run:
-    cd backend
+    cd edge
     uvicorn main:app --reload --port 8000
 """
 
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from typing import Optional
 
@@ -39,19 +42,27 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize storage, escalation manager, and start detection pipeline."""
-    config = get_config()
-    db_path = str(_PROJECT_ROOT / config.storage.db_path)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
-    storage = EventStorage(db_path)
-    decisions = DecisionStorage(db_path)
+    config = get_config()
+    logging.getLogger("edge").setLevel(getattr(logging, config.site.log_level, logging.INFO))
+    db_path = str(_PROJECT_ROOT / config.storage.db_path)
+    site_id = config.site.id
+
+    storage = EventStorage(db_path, site_id=site_id)
+    decisions = DecisionStorage(db_path, site_id=site_id)
     app.state.storage = storage
     app.state.decisions = decisions
     app.state.config = config
 
-    role_storage = RoleStorage(db_path)
+    role_storage = RoleStorage(db_path, site_id=site_id)
     app.state.role_storage = role_storage
 
-    profile_storage = CameraProfileStorage(db_path)
+    profile_storage = CameraProfileStorage(db_path, site_id=site_id)
     app.state.profile_storage = profile_storage
 
     escalation = None
@@ -62,13 +73,13 @@ async def lifespan(app: FastAPI):
                 username="owner",
             )
             if created:
-                print(f"Bootstrapped admin from TELEGRAM_CHAT_ID: {config.secrets.telegram_chat_id}")
+                logger.info(f"Bootstrapped admin from TELEGRAM_CHAT_ID: {config.secrets.telegram_chat_id}")
 
         telegram = TelegramSender(
             bot_token=config.secrets.telegram_bot_token,
             chat_id=config.secrets.telegram_chat_id,
         )
-        escalation = EscalationManager(config, telegram, db_path, role_storage)
+        escalation = EscalationManager(config, telegram, db_path, role_storage, site_id=site_id)
         escalation.start()
     app.state.escalation = escalation
 

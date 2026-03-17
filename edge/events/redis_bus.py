@@ -21,7 +21,10 @@ Usage:
 """
 
 import json
+import logging
 from pyee.base import EventEmitter
+
+logger = logging.getLogger(__name__)
 
 
 class RedisBus:
@@ -63,7 +66,7 @@ class RedisBus:
             )
         except Exception as e:
             # Redis down? Log but don't crash the pipeline
-            print(f"Redis publish failed: {e}")
+            logger.warning(f"Redis publish failed: {e}")
 
         # 2. Fire local pyee handlers (backward compatible)
         self._local.emit(event_type, data)

@@ -22,7 +22,10 @@ Usage:
 """
 
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class SceneMemory:
@@ -109,7 +112,7 @@ class SceneMemory:
 
         except Exception as e:
             # Redis down? Don't crash the pipeline
-            print(f"Scene memory update failed: {e}")
+            logger.warning(f"Scene memory update failed: {e}")
 
     def record_departure(self, event_data):
         """
@@ -137,7 +140,7 @@ class SceneMemory:
             self.redis.expire(self._departures_key, 60)
         except Exception as e:
             # Redis down? Don't crash the pipeline
-            print(f"Scene memory departure record failed: {e}")
+            logger.warning(f"Scene memory departure record failed: {e}")
 
     def get_scene_summary(self):
         """
@@ -171,7 +174,7 @@ class SceneMemory:
             }
 
         except Exception as e:
-            print(f"Scene memory read failed: {e}")
+            logger.warning(f"Scene memory read failed: {e}")
             return {
                 "camera_id": self.camera_id,
                 "people_count": 0,
@@ -250,5 +253,5 @@ class SceneMemory:
             return summaries
 
         except Exception as e:
-            print(f"Cross-camera summary failed: {e}")
+            logger.warning(f"Cross-camera summary failed: {e}")
             return []

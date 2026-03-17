@@ -19,7 +19,11 @@ Usage:
         )
 """
 
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramSender:
@@ -93,7 +97,7 @@ class TelegramSender:
                 return self._send_message(text, chat_id=target,
                                           reply_markup=reply_markup)
         except Exception as e:
-            print(f"Telegram send failed: {e}")
+            logger.warning(f"Telegram send failed: {e}")
             return False
 
     def send_alert_with_button(self, chat_id, event_type, track_id, severity,
@@ -139,7 +143,7 @@ class TelegramSender:
             )
             return response.json().get("ok", False)
         except Exception as e:
-            print(f"Telegram answerCallbackQuery failed: {e}")
+            logger.warning(f"Telegram answerCallbackQuery failed: {e}")
             return False
 
     def edit_message(self, chat_id, message_id, new_text):
@@ -157,7 +161,7 @@ class TelegramSender:
             )
             return response.json().get("ok", False)
         except Exception as e:
-            print(f"Telegram editMessageText failed: {e}")
+            logger.warning(f"Telegram editMessageText failed: {e}")
             return False
 
     def edit_message_caption(self, chat_id, message_id, new_caption):
@@ -175,7 +179,7 @@ class TelegramSender:
             )
             return response.json().get("ok", False)
         except Exception as e:
-            print(f"Telegram editMessageCaption failed: {e}")
+            logger.warning(f"Telegram editMessageCaption failed: {e}")
             return False
 
     def send_text(self, chat_id, text):
@@ -192,7 +196,7 @@ class TelegramSender:
             )
             return response.json().get("ok", False)
         except Exception as e:
-            print(f"Telegram send_text failed: {e}")
+            logger.warning(f"Telegram send_text failed: {e}")
             return False
 
     def get_updates(self, offset=0):
@@ -222,7 +226,7 @@ class TelegramSender:
                 return data.get("result", [])
             return []
         except Exception as e:
-            print(f"Telegram getUpdates failed: {e}")
+            logger.warning(f"Telegram getUpdates failed: {e}")
             return []
 
     def _send_message(self, text, chat_id=None, reply_markup=None):
@@ -243,7 +247,7 @@ class TelegramSender:
         )
         data = response.json()
         if not data.get("ok"):
-            print(f"Telegram API error: {response.text}")
+            logger.warning(f"Telegram API error: {response.text}")
             return False
         return {"ok": True, "message_id": data["result"]["message_id"]}
 
@@ -270,11 +274,11 @@ class TelegramSender:
                 )
             data = response.json()
             if not data.get("ok"):
-                print(f"Telegram API error: {response.text}")
+                logger.warning(f"Telegram API error: {response.text}")
                 return False
             return {"ok": True, "message_id": data["result"]["message_id"]}
         except FileNotFoundError:
-            print(f"Snapshot not found: {photo_path}, sending text-only")
+            logger.warning(f"Snapshot not found: {photo_path}, sending text-only")
             return self._send_message(caption, chat_id=target,
                                       reply_markup=reply_markup)
 
@@ -302,13 +306,13 @@ class TelegramSender:
                 )
             data = response.json()
             if not data.get("ok"):
-                print(f"Telegram sendVideo error: {response.text}")
+                logger.warning(f"Telegram sendVideo error: {response.text}")
                 # Fall back to photo if video send fails
                 return self._send_photo(caption, video_path.replace(".mp4", ".jpg"),
                                         chat_id=target, reply_markup=reply_markup)
             return {"ok": True, "message_id": data["result"]["message_id"]}
         except FileNotFoundError:
-            print(f"Video not found: {video_path}, trying snapshot fallback")
+            logger.warning(f"Video not found: {video_path}, trying snapshot fallback")
             snapshot = video_path.replace(".mp4", ".jpg")
             return self._send_photo(caption, snapshot, chat_id=target,
                                     reply_markup=reply_markup)

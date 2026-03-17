@@ -12,12 +12,15 @@ Usage:
 """
 
 import collections
+import logging
 import os
 import threading
 import time
 from datetime import datetime
 
 import cv2
+
+logger = logging.getLogger(__name__)
 
 from capture.camera import Camera
 from detection.detector import Detector
@@ -148,9 +151,9 @@ class PipelineRunner:
                     r.ping()
                     bus = RedisBus(r, camera_id=self.camera_id)
                     scene_memory = SceneMemory(r, camera_id=self.camera_id)
-                    print(f"[{self.camera_id}] Using RedisBus (stream: {bus.stream})")
+                    logger.info(f"[{self.camera_id}] Using RedisBus (stream: {bus.stream})")
                 except Exception as e:
-                    print(f"[{self.camera_id}] Redis unavailable ({e}), falling back to in-process bus")
+                    logger.warning(f"[{self.camera_id}] Redis unavailable ({e}), falling back to in-process bus")
                     bus = event_bus
                     scene_memory = None
             else:
@@ -208,7 +211,7 @@ class PipelineRunner:
 
             camera.warm_up()
             self.status = "running"
-            print(f"[{self.camera_id}] Pipeline running: source={source}, FPS={camera.fps}")
+            logger.info(f"[{self.camera_id}] Pipeline running: source={source}, FPS={camera.fps}")
 
             # FPS tracking
             fps_start = time.time()
@@ -255,12 +258,12 @@ class PipelineRunner:
             if self._eval_agent is not None:
                 self._eval_agent.stop()
             self.status = "stopped"
-            print(f"[{self.camera_id}] Pipeline stopped.")
+            logger.info(f"[{self.camera_id}] Pipeline stopped.")
 
         except Exception as e:
             self.status = "error"
             self.error = str(e)
-            print(f"[{self.camera_id}] Pipeline error: {e}")
+            logger.error(f"[{self.camera_id}] Pipeline error: {e}")
 
     def _subscribe_snapshot_saver(self, bus):
         """Save a snapshot image + video clip for each event."""
@@ -368,9 +371,9 @@ class PipelineRunner:
 
             writer.release()
             os.rename(tmp_path, path)
-            print(f"  CLIP: Saved {path} ({len(frames)} frames)")
+            logger.debug(f"  CLIP: Saved {path} ({len(frames)} frames)")
         except Exception as e:
-            print(f"  CLIP: Failed to write {path}: {e}")
+            logger.error(f"  CLIP: Failed to write {path}: {e}")
             # Clean up incomplete temp file
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -402,6 +405,6 @@ class PipelineRunner:
                     if objects:
                         extra += f" | objects={objects}"
                     cam = event_data.get("camera_id", "?")
-                    print(f"  EVENT: [{cam}] {event_type.upper()} | Track #{track_id} | {ts}{extra}")
+                    logger.debug(f"  EVENT: [{cam}] {event_type.upper()} | Track #{track_id} | {ts}{extra}")
                 return handler
             bus.on(et, make_handler(et))

@@ -29,6 +29,7 @@ class CameraProfile(SQLModel, table=True):
     __tablename__ = "camera_profile"
 
     id: int | None = Field(default=None, primary_key=True)
+    site_id: str = Field(default="default", index=True)
     camera_id: str = Field(unique=True, index=True)
     description: str = ""
     schedule_json: str = ""  # JSON: {"weekday": {"start": "08:00", "end": "18:00"}, ...}
@@ -43,8 +44,9 @@ class CameraProfileStorage:
     Uses the same database as EventStorage/DecisionStorage.
     """
 
-    def __init__(self, db_path="data/stangwatch.db"):
+    def __init__(self, db_path="data/stangwatch.db", site_id="default"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.site_id = site_id
 
         self.engine = create_engine(
             f"sqlite:///{db_path}",
@@ -58,6 +60,17 @@ class CameraProfileStorage:
             cursor.close()
 
         SQLModel.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns that don't exist yet (SQLModel create_all won't do this)."""
+        from sqlalchemy import text
+
+        with self.engine.connect() as conn:
+            existing = {row[1] for row in conn.execute(text("PRAGMA table_info(camera_profile)"))}
+            if "site_id" not in existing:
+                conn.execute(text("ALTER TABLE camera_profile ADD COLUMN site_id TEXT NOT NULL DEFAULT 'default'"))
+            conn.commit()
 
     def get_profile(self, camera_id):
         """
@@ -208,6 +221,7 @@ class CameraProfileStorage:
                 schedule = None
 
         return {
+            "site_id": profile.site_id,
             "camera_id": profile.camera_id,
             "description": profile.description,
             "schedule": schedule,

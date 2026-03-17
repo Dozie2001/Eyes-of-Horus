@@ -177,7 +177,28 @@ export function getActiveMembers() {
  * Snapshot paths in the DB look like: "data/events/webcam/summary_track5.jpg"
  * We strip "data/events/" to get the relative path for the mount.
  */
+/**
+ * Build the full URL for a media file served by the backend.
+ *
+ * Handles both formats stored in the DB:
+ *   - Relative: "data/events/webcam/file.jpg"
+ *   - Absolute: "/Users/.../stang/data/events/webcam/file.jpg"
+ *
+ * Both get normalized to "/snapshots/webcam/file.jpg".
+ */
+function normalizeMediaPath(path: string): string {
+  // Strip absolute path up to and including data/events/
+  const idx = path.indexOf("data/events/");
+  if (idx !== -1) {
+    return path.slice(idx + "data/events/".length);
+  }
+  return path;
+}
+
 export function snapshotUrl(path: string): string {
-  const relative = path.replace(/^data\/events\//, "");
-  return `${API_URL}/snapshots/${relative}`;
+  return `${API_URL}/snapshots/${normalizeMediaPath(path)}`;
+}
+
+export function mediaUrl(path: string): string {
+  return `${API_URL}/snapshots/${normalizeMediaPath(path)}`;
 }

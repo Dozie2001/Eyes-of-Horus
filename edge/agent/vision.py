@@ -28,10 +28,13 @@ Usage:
 """
 
 import base64
+import logging
 import time
 
 import httpx
 import ollama
+
+logger = logging.getLogger(__name__)
 
 
 VISION_PROMPT = (
@@ -74,7 +77,7 @@ def _extract_key_frames(video_path, num_frames=5):
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            print(f"Vision: could not open video: {video_path}")
+            logger.warning(f"Vision: could not open video: {video_path}")
             return []
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -104,7 +107,7 @@ def _extract_key_frames(video_path, num_frames=5):
         return frames_b64
 
     except Exception as e:
-        print(f"Vision: frame extraction failed: {e}")
+        logger.warning(f"Vision: frame extraction failed: {e}")
         return []
 
 
@@ -134,9 +137,9 @@ class VisionDescriber:
             available = [m.model for m in models.models]
             self._available = self.model in available
             if not self._available:
-                print(f"Vision model '{self.model}' not found. Available: {available}")
+                logger.warning(f"Vision model '{self.model}' not found. Available: {available}")
         except Exception as e:
-            print(f"Vision model health check failed: {e}")
+            logger.warning(f"Vision model health check failed: {e}")
             self._available = False
 
         self._checked_at = now
@@ -151,7 +154,7 @@ class VisionDescriber:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("utf-8")
         except FileNotFoundError:
-            print(f"Vision: snapshot not found: {image_path}")
+            logger.warning(f"Vision: snapshot not found: {image_path}")
             return None
 
         try:
@@ -168,11 +171,11 @@ class VisionDescriber:
             elapsed_ms = int((time.time() - start) * 1000)
 
             description = response.message.content.strip()
-            print(f"  VISION: {description[:80]}... ({elapsed_ms}ms)")
+            logger.debug(f"  VISION: {description[:80]}... ({elapsed_ms}ms)")
             return description
 
         except Exception as e:
-            print(f"Vision description failed: {e}")
+            logger.warning(f"Vision description failed: {e}")
             return None
 
     def describe_video(self, video_path, num_frames=5):
@@ -198,11 +201,11 @@ class VisionDescriber:
             elapsed_ms = int((time.time() - start) * 1000)
 
             description = response.message.content.strip()
-            print(f"  VISION (video, {len(frames_b64)} frames): {description[:80]}... ({elapsed_ms}ms)")
+            logger.debug(f"  VISION (video, {len(frames_b64)} frames): {description[:80]}... ({elapsed_ms}ms)")
             return description
 
         except Exception as e:
-            print(f"Vision video description failed: {e}")
+            logger.warning(f"Vision video description failed: {e}")
             return None
 
 
@@ -237,9 +240,9 @@ class GeminiVisionDescriber:
             )
             self._available = resp.status_code == 200
             if not self._available:
-                print(f"Gemini health check failed: HTTP {resp.status_code}")
+                logger.warning(f"Gemini health check failed: HTTP {resp.status_code}")
         except Exception as e:
-            print(f"Gemini health check failed: {e}")
+            logger.warning(f"Gemini health check failed: {e}")
             self._available = False
 
         self._checked_at = now
@@ -254,7 +257,7 @@ class GeminiVisionDescriber:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("utf-8")
         except FileNotFoundError:
-            print(f"Vision: snapshot not found: {image_path}")
+            logger.warning(f"Vision: snapshot not found: {image_path}")
             return None
 
         parts = [
@@ -303,16 +306,16 @@ class GeminiVisionDescriber:
             elapsed_ms = int((time.time() - start) * 1000)
 
             if resp.status_code != 200:
-                print(f"Gemini API error: HTTP {resp.status_code} — {resp.text[:200]}")
+                logger.warning(f"Gemini API error: HTTP {resp.status_code} — {resp.text[:200]}")
                 return None
 
             result = resp.json()
             text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-            print(f"  VISION ({label}): {text[:80]}... ({elapsed_ms}ms)")
+            logger.debug(f"  VISION ({label}): {text[:80]}... ({elapsed_ms}ms)")
             return text
 
         except Exception as e:
-            print(f"Gemini vision failed: {e}")
+            logger.warning(f"Gemini vision failed: {e}")
             return None
 
 
@@ -349,9 +352,9 @@ class GroqVisionDescriber:
             )
             self._available = resp.status_code == 200
             if not self._available:
-                print(f"Groq health check failed: HTTP {resp.status_code}")
+                logger.warning(f"Groq health check failed: HTTP {resp.status_code}")
         except Exception as e:
-            print(f"Groq health check failed: {e}")
+            logger.warning(f"Groq health check failed: {e}")
             self._available = False
 
         self._checked_at = now
@@ -366,7 +369,7 @@ class GroqVisionDescriber:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("utf-8")
         except FileNotFoundError:
-            print(f"Vision: snapshot not found: {image_path}")
+            logger.warning(f"Vision: snapshot not found: {image_path}")
             return None
 
         messages = [{
@@ -420,14 +423,14 @@ class GroqVisionDescriber:
             elapsed_ms = int((time.time() - start) * 1000)
 
             if resp.status_code != 200:
-                print(f"Groq API error: HTTP {resp.status_code} — {resp.text[:200]}")
+                logger.warning(f"Groq API error: HTTP {resp.status_code} — {resp.text[:200]}")
                 return None
 
             result = resp.json()
             text = result["choices"][0]["message"]["content"].strip()
-            print(f"  VISION ({label}): {text[:80]}... ({elapsed_ms}ms)")
+            logger.debug(f"  VISION ({label}): {text[:80]}... ({elapsed_ms}ms)")
             return text
 
         except Exception as e:
-            print(f"Groq vision failed: {e}")
+            logger.warning(f"Groq vision failed: {e}")
             return None

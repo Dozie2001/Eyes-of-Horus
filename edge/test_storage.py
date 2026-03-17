@@ -3,7 +3,7 @@ Test script for EventStorage.
 Tests database creation, event saving, querying, and bus integration.
 No camera or YOLO needed — pure data operations.
 
-Run: python test_storage.py (from backend/)
+Run: python test_storage.py (from edge/)
 """
 
 import os
