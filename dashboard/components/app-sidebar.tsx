@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Bell,
@@ -9,8 +10,10 @@ import {
   Camera,
   Settings,
   Video,
+  LogOut,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { createClient } from "@/lib/supabase/client";
 import {
   Sidebar,
   SidebarContent,
@@ -32,8 +35,27 @@ const navItems = [
   { title: "Settings", href: "/settings", icon: Settings },
 ];
 
+const isCloudMode = process.env.NEXT_PUBLIC_MODE === "cloud";
+
 export function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isCloudMode) return;
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      setUserEmail(data.user?.email ?? null);
+    });
+  }, []);
+
+  async function handleLogout() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
 
   return (
     <Sidebar>
@@ -75,7 +97,21 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="px-5 pb-5">
+      <SidebarFooter className="px-5 pb-5 space-y-3">
+        {isCloudMode && userEmail && (
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[10px] text-muted-foreground truncate max-w-[140px]">
+              {userEmail}
+            </span>
+            <button
+              onClick={handleLogout}
+              className="text-muted-foreground/50 hover:text-foreground transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="size-3.5" />
+            </button>
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="size-1.5 rounded-full bg-green-500/80" />

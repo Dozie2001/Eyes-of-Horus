@@ -8,6 +8,9 @@ cameras:
   - name: "webcam"
     source: "0"
     enabled: true
+  - name: "v720"
+    source: "v720://192.168.169.1:6123"
+    enabled: false
 detection:
   model_name: "yolo11s.pt"
   confidence_threshold: 0.5
@@ -32,6 +35,13 @@ storage:
   cloud_sync: false
   cloud_provider: ""
   cloud_url: ""
+
+cloud:
+  enabled: false
+  api_url: ""                # https://api.eyesofhorus.com
+  api_key: ""                # device API key (sk_device_xxx)
+  sync_interval: 30          # seconds between sync cycles
+  heartbeat_interval: 60     # seconds between heartbeat pushes
 
 alerts:
   cooldown_seconds: 60.0
