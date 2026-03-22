@@ -10,6 +10,7 @@ import {
   Camera,
   Settings,
   Video,
+  Users,
   LogOut,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
@@ -32,10 +33,11 @@ const navItems = [
   { title: "Alerts", href: "/alerts", icon: Bell },
   { title: "Events", href: "/events", icon: Activity },
   { title: "Cameras", href: "/cameras", icon: Camera },
+  { title: "Team", href: "/team", icon: Users },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
 
-const isCloudMode = process.env.NEXT_PUBLIC_MODE === "cloud";
+const hasAuth = process.env.NEXT_PUBLIC_MODE === "cloud" || process.env.NEXT_PUBLIC_MODE === "hybrid";
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -43,7 +45,7 @@ export function AppSidebar() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isCloudMode) return;
+    if (!hasAuth) return;
     const supabase = createClient();
     supabase.auth.getUser().then(({ data }) => {
       setUserEmail(data.user?.email ?? null);
@@ -98,7 +100,7 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="px-5 pb-5 space-y-3">
-        {isCloudMode && userEmail && (
+        {hasAuth && userEmail && (
           <div className="flex items-center justify-between">
             <span className="font-mono text-[10px] text-muted-foreground truncate max-w-[140px]">
               {userEmail}

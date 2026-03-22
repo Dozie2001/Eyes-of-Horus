@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -15,20 +15,88 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Eye, EyeIcon, EyeOffIcon, Building2, CheckCircle2 } from "lucide-react";
+import { Eye, EyeIcon, EyeOffIcon, CheckCircle2, ShieldAlert } from "lucide-react";
 
 export default function SignupPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-background"><p className="text-sm text-muted-foreground">Loading...</p></div>}>
+      <SignupForm />
+    </Suspense>
+  );
+}
+
+function SignupForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [orgName, setOrgName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [invite, setInvite] = useState<{
+    id: string;
+    org_id: string;
+    role: string;
+    org_name?: string;
+  } | null>(null);
+  const [validating, setValidating] = useState(true);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const code = searchParams.get("code");
+
+  useEffect(() => {
+    if (!code) {
+      setValidating(false);
+      return;
+    }
+    validateInvite(code);
+  }, [code]);
+
+  async function validateInvite(inviteCode: string) {
+    const supabase = createClient();
+
+    const { data, error } = await supabase
+      .from("dashboard_invite")
+      .select("id, org_id, role, expires_at, used_at")
+      .eq("code", inviteCode)
+      .single();
+
+    if (error || !data) {
+      setError("Invalid invite code.");
+      setValidating(false);
+      return;
+    }
+
+    if (data.used_at) {
+      setError("This invite code has already been used.");
+      setValidating(false);
+      return;
+    }
+
+    if (new Date(data.expires_at) < new Date()) {
+      setError("This invite code has expired.");
+      setValidating(false);
+      return;
+    }
+
+    // Get org name
+    const { data: org } = await supabase
+      .from("organization")
+      .select("name")
+      .eq("id", data.org_id)
+      .single();
+
+    setInvite({
+      id: data.id,
+      org_id: data.org_id,
+      role: data.role,
+      org_name: org?.name || "Unknown Organization",
+    });
+    setValidating(false);
+  }
 
   async function handleSignup(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!invite) return;
     setError("");
     setLoading(true);
 
@@ -46,36 +114,105 @@ export default function SignupPage() {
     }
 
     if (!authData.user) {
-      setError("Signup failed — no user returned");
+      setError("Signup failed.");
       setLoading(false);
       return;
     }
 
-    const slug = orgName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
+    // Update the member record with the email
+    const { error: memberError } = await supabase
+      .from("member")
+      .update({ email, status: "active", updated_at: new Date().toISOString() })
+      .eq("org_id", invite.org_id)
+      .eq("email", email)
+      .eq("status", "pending");
 
-    const { data: org, error: orgError } = await supabase
-      .from("organization")
-      .insert({ name: orgName, slug })
-      .select("id")
-      .single();
-
-    if (orgError) {
-      console.error("Org creation failed:", orgError);
-    } else {
-      await supabase.from("org_member").insert({
-        org_id: org.id,
-        user_id: authData.user.id,
-        role: "owner",
+    // If no pending member with this email, create one
+    if (memberError) {
+      await supabase.from("member").insert({
+        org_id: invite.org_id,
+        role: invite.role,
+        name: email.split("@")[0],
+        email,
+        status: "active",
       });
     }
+
+    // Mark invite as used
+    await supabase
+      .from("dashboard_invite")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", invite.id);
 
     setSuccess(true);
     setLoading(false);
   }
 
+  // No invite code provided
+  if (!code && !validating) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <Card className="flex w-full max-w-[440px] shadow-none flex-col gap-6 p-5 md:p-8">
+          <CardHeader className="flex flex-col items-center gap-2">
+            <div className="relative flex size-[68px] shrink-0 items-center justify-center rounded-full backdrop-blur-xl md:size-24 before:absolute before:inset-0 before:rounded-full before:bg-gradient-to-b before:from-horus/30 before:to-transparent before:opacity-30">
+              <div className="relative z-10 flex size-12 items-center justify-center rounded-full bg-background dark:bg-muted/80 shadow-xs ring-1 ring-inset ring-border md:size-16">
+                <ShieldAlert className="size-6 text-muted-foreground md:size-8" />
+              </div>
+            </div>
+            <div className="flex flex-col space-y-1.5 text-center">
+              <CardTitle className="md:text-xl font-medium">
+                Invite required
+              </CardTitle>
+              <CardDescription>
+                Eyes of Horus uses invite-only registration. Contact your administrator to get an invite link.
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <Separator />
+          <Link href="/login">
+            <Button variant="outline" className="w-full">
+              Back to login
+            </Button>
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
+  // Validating invite code
+  if (validating) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <p className="text-sm text-muted-foreground">Validating invite...</p>
+      </div>
+    );
+  }
+
+  // Invalid/expired invite
+  if (error && !invite) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <Card className="flex w-full max-w-[440px] shadow-none flex-col gap-6 p-5 md:p-8">
+          <CardHeader className="flex flex-col items-center gap-2">
+            <div className="flex flex-col space-y-1.5 text-center">
+              <CardTitle className="md:text-xl font-medium">
+                Invalid invite
+              </CardTitle>
+              <CardDescription>{error}</CardDescription>
+            </div>
+          </CardHeader>
+          <Separator />
+          <Link href="/login">
+            <Button variant="outline" className="w-full">
+              Back to login
+            </Button>
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
+  // Success
   if (success) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -86,32 +223,24 @@ export default function SignupPage() {
                 <CheckCircle2 className="size-6 text-green-500 md:size-8" />
               </div>
             </div>
-
             <div className="flex flex-col space-y-1.5 text-center">
-              <CardTitle className="md:text-xl font-medium">
-                Check your email
-              </CardTitle>
-              <CardDescription className="tracking-[-0.006em]">
+              <CardTitle className="md:text-xl font-medium">Check your email</CardTitle>
+              <CardDescription>
                 We sent a confirmation link to <strong className="text-foreground">{email}</strong>.
                 Click it to activate your account.
               </CardDescription>
             </div>
           </CardHeader>
-
           <Separator />
-
-          <div className="text-center">
-            <Link href="/login">
-              <Button variant="outline" className="w-full">
-                Back to login
-              </Button>
-            </Link>
-          </div>
+          <Link href="/login">
+            <Button variant="outline" className="w-full">Back to login</Button>
+          </Link>
         </Card>
       </div>
     );
   }
 
+  // Valid invite — show signup form
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="flex w-full max-w-[440px] shadow-none flex-col gap-6 p-5 md:p-8">
@@ -121,16 +250,15 @@ export default function SignupPage() {
               <Eye className="size-6 text-horus md:size-8" />
             </div>
           </div>
-
           <div className="flex flex-col space-y-1.5 text-center">
             <p className="font-mono text-[10px] tracking-[0.3em] uppercase text-horus">
               eyes of horus
             </p>
             <CardTitle className="md:text-xl font-medium">
-              Create your account
+              Join {invite?.org_name}
             </CardTitle>
-            <CardDescription className="tracking-[-0.006em]">
-              Set up your organization to start monitoring.
+            <CardDescription>
+              You have been invited as <strong className="text-foreground">{invite?.role}</strong>. Create your account to get started.
             </CardDescription>
           </div>
         </CardHeader>
@@ -139,25 +267,6 @@ export default function SignupPage() {
 
         <CardContent className="p-0">
           <form onSubmit={handleSignup} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2.5">
-              <Label htmlFor="orgName">Organization name</Label>
-              <div className="relative">
-                <Input
-                  id="orgName"
-                  type="text"
-                  placeholder="Acme Warehouses"
-                  className="ps-9 rounded-lg"
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                  required
-                  autoFocus
-                />
-                <div className="absolute inset-y-0 start-0 flex items-center ps-3 text-muted-foreground/60">
-                  <Building2 size={16} />
-                </div>
-              </div>
-            </div>
-
             <div className="flex flex-col gap-2.5">
               <Label htmlFor="email">Email</Label>
               <Input
@@ -168,6 +277,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                autoFocus
               />
             </div>
 
@@ -185,23 +295,16 @@ export default function SignupPage() {
                   minLength={6}
                 />
                 <button
-                  className="text-muted-foreground/80 hover:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 absolute inset-y-0 end-0 flex h-full w-9 items-center justify-center rounded-e-md transition-[color,box-shadow] outline-none focus:z-10 focus-visible:ring-[3px]"
+                  className="text-muted-foreground/80 hover:text-foreground absolute inset-y-0 end-0 flex h-full w-9 items-center justify-center rounded-e-md transition-colors outline-none"
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
                 >
-                  {showPassword ? (
-                    <EyeOffIcon size={16} aria-hidden="true" />
-                  ) : (
-                    <EyeIcon size={16} aria-hidden="true" />
-                  )}
+                  {showPassword ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
                 </button>
               </div>
             </div>
 
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
 
             <Button
               type="submit"
@@ -212,15 +315,6 @@ export default function SignupPage() {
             </Button>
           </form>
         </CardContent>
-
-        <Separator />
-
-        <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
-          <Link href="/login" className="text-horus hover:underline">
-            Sign in
-          </Link>
-        </p>
       </Card>
     </div>
   );

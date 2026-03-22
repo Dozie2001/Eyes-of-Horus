@@ -33,14 +33,15 @@ export async function updateSession(request: NextRequest) {
     request.nextUrl.pathname === "/login" ||
     request.nextUrl.pathname === "/signup";
 
-  const isLocalMode = process.env.NEXT_PUBLIC_MODE !== "cloud";
+  const mode = process.env.NEXT_PUBLIC_MODE || "local";
+  const requiresAuth = mode === "cloud" || mode === "hybrid";
 
   // In local mode, skip auth entirely
-  if (isLocalMode) {
+  if (!requiresAuth) {
     return supabaseResponse;
   }
 
-  // In cloud mode, redirect unauthenticated users to login
+  // In cloud/hybrid mode, redirect unauthenticated users to login
   if (!user && !isAuthPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
