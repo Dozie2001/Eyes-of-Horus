@@ -159,6 +159,12 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
     else:
         parts.append("Objects near person: none")
 
+    zones = event_data.get("zones", [])
+    if zones:
+        parts.append(f"Person is in zone(s): {', '.join(zones)}")
+    else:
+        parts.append("Person is not in any defined zone")
+
     companions = event_data.get("companion_track_ids", [])
     if companions:
         parts.append(f"Companion tracks nearby: {companions}")
@@ -253,5 +259,133 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
             parts.append(f"Severity guidance: {sev_line}")
 
         parts.append("Use this feedback to calibrate your judgment. If false alarm rates are high, require stronger evidence before alerting.")
+
+    return "\n".join(parts)
+
+
+def build_interactive_prompt(question, role="guard", scene_context=None):
+    """
+    Build a prompt for the interactive /ask command.
+
+    Args:
+        question: the user's question
+        role: guard/supervisor/admin — controls detail level
+        scene_context: dict of {camera_id: scene_summary} or None
+    """
+    parts = []
+
+    parts.append(f"A {role} is asking: {question}")
+    parts.append("")
+
+    if scene_context:
+        parts.append("## Current camera data")
+        for cam_id, summary in scene_context.items():
+            people_count = summary.get("people_count", 0)
+            parts.append(f"\n### Camera: {cam_id}")
+            parts.append(f"People visible: {people_count}")
+
+            for person in summary.get("people", []):
+                tid = person.get("track_id", "?")
+                dur = person.get("duration", 0)
+                mvmt = person.get("movement_30f", 0)
+                spread = person.get("position_spread", 0)
+                objects = person.get("objects", "[]")
+                parts.append(f"  - Track #{tid}: on camera {dur}s, movement={mvmt}, spread={spread}, objects={objects}")
+
+            scene_objects = summary.get("objects", [])
+            if scene_objects:
+                parts.append(f"Visible objects: {', '.join(scene_objects)}")
+    else:
+        parts.append("## Camera data")
+        parts.append("No real-time scene data available.")
+
+    parts.append("")
+
+    if role == "guard":
+        parts.append("## Instructions")
+        parts.append("Answer factually and briefly. State what is visible. Do not provide analysis or recommendations.")
+    elif role == "supervisor":
+        parts.append("## Instructions")
+        parts.append("Answer factually. Include brief analysis of whether the activity seems normal for the time of day. Keep it concise.")
+    else:
+        parts.append("## Instructions")
+        parts.append("Answer with full detail. Include analysis, patterns, and recommendations if relevant.")
+
+    return "\n".join(parts)
+
+
+def build_chat_prompt(message, role="guard", scene_context=None,
+                      recent_events=None, recent_alerts=None, last_alert=None):
+    """
+    Build a prompt for conversational chat (natural language messages).
+
+    Richer than build_interactive_prompt — includes event history and alert details.
+    """
+    parts = []
+
+    parts.append(f"## User message (from {role})")
+    parts.append(message)
+    parts.append("")
+
+    # Live scene data
+    if scene_context:
+        parts.append("## Live camera data (right now)")
+        for cam_id, summary in scene_context.items():
+            people_count = summary.get("people_count", 0)
+            parts.append(f"\n**{cam_id}**: {people_count} person(s)")
+            for person in summary.get("people", []):
+                tid = person.get("track_id", "?")
+                dur = person.get("duration", 0)
+                mvmt = person.get("movement_30f", 0)
+                objects = person.get("objects", "[]")
+                parts.append(f"  - Track #{tid}: {dur}s on camera, movement={mvmt}, objects={objects}")
+            scene_objects = summary.get("objects", [])
+            if scene_objects:
+                parts.append(f"  Objects: {', '.join(scene_objects)}")
+    else:
+        parts.append("## Live camera data")
+        parts.append("No real-time data available.")
+
+    # Recent events
+    if recent_events:
+        parts.append("")
+        parts.append("## Recent events (last 20)")
+        for evt in recent_events[:20]:
+            et = evt.get("event_type", "?")
+            ts = evt.get("timestamp", "?")
+            cam = evt.get("camera_id", "?")
+            tid = evt.get("track_id", "?")
+            dur = evt.get("duration_seconds", 0)
+            parts.append(f"  - [{ts}] {cam}: {et} Track #{tid} ({dur}s)")
+
+    # Recent alerts
+    if recent_alerts:
+        parts.append("")
+        parts.append("## Recent alerts (last 10)")
+        for alert in recent_alerts[:10]:
+            ts = alert.get("created_at", "?")
+            cam = alert.get("camera_id", "?")
+            sev = alert.get("severity", "?")
+            reason = alert.get("reason", "?")
+            parts.append(f"  - [{ts}] {cam}: {sev} — {reason}")
+
+    # Last alert for follow-up context
+    if last_alert:
+        parts.append("")
+        parts.append("## Most recent alert (for follow-up questions)")
+        parts.append(f"  Camera: {last_alert.get('camera_id', '?')}")
+        parts.append(f"  Severity: {last_alert.get('severity', '?')}")
+        parts.append(f"  Reason: {last_alert.get('reason', '?')}")
+        parts.append(f"  Recommendation: {last_alert.get('recommendation', '?')}")
+        parts.append(f"  Time: {last_alert.get('created_at', '?')}")
+
+    # Role instruction
+    parts.append("")
+    if role == "guard":
+        parts.append("Respond briefly and factually. No analysis.")
+    elif role == "supervisor":
+        parts.append("Respond with facts and brief analysis.")
+    else:
+        parts.append("Respond with full detail, analysis, and recommendations.")
 
     return "\n".join(parts)

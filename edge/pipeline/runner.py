@@ -160,6 +160,13 @@ class PipelineRunner:
                 bus = event_bus
                 scene_memory = None
 
+            # Load zones from camera profile
+            camera_zones = []
+            if self._profile_storage:
+                profile = self._profile_storage.get_profile(self.camera_id)
+                if profile and profile.get("zones"):
+                    camera_zones = profile["zones"]
+
             self._tracker = EventTracker(
                 event_bus=bus,
                 quiet_hours=tracking.quiet_hours,
@@ -167,6 +174,7 @@ class PipelineRunner:
                 companion_distance=tracking.companion_distance,
                 summary_interval=tracking.summary_interval,
                 camera_id=self.camera_id,
+                zones=camera_zones,
             )
 
             # Subscribe storage to bus (auto-saves events)
@@ -190,6 +198,10 @@ class PipelineRunner:
             self._frame_size = (camera.width, camera.height)
             buffer_frames = int(5 * self._source_fps)
             self._frame_buffer = collections.deque(maxlen=buffer_frames)
+
+            # Register scene memory with escalation manager for /ask, /scene, /compare
+            if scene_memory is not None and self._escalation is not None:
+                self._escalation.register_scene_memory(self.camera_id, scene_memory)
 
             self._eval_agent = None
             if self.config.agent.enabled:

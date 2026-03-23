@@ -128,7 +128,8 @@ class EventTracker:
     """
 
     def __init__(self, event_bus, quiet_hours=None, departure_seconds=3.0,
-                 companion_distance=200, summary_interval=60.0, camera_id="cam1"):
+                 companion_distance=200, summary_interval=60.0, camera_id="cam1",
+                 zones=None):
         """
         Args:
             event_bus: pyee EventEmitter instance
@@ -137,6 +138,7 @@ class EventTracker:
             companion_distance: max pixels between two people to trigger COMPANION
             summary_interval: seconds between periodic track summaries
             camera_id: identifier for this camera (included in all events)
+            zones: list of zone dicts from camera profile (for zone-aware events)
         """
         self.bus = event_bus
         self.camera_id = camera_id
@@ -144,6 +146,7 @@ class EventTracker:
         self.departure_seconds = departure_seconds
         self.companion_distance = companion_distance
         self.summary_interval = summary_interval
+        self._zones = zones or []
 
         # Active tracks: track_id → TrackedPerson
         self.tracks = {}
@@ -284,6 +287,10 @@ class EventTracker:
             if self._distance(person.positions[-1], other.positions[-1]) < self.companion_distance:
                 companions.append(other_id)
 
+        # Check which zones the person is in
+        from detection.zones import check_zones
+        zones = check_zones(person.positions[-1], self._zones) if self._zones else []
+
         return {
             "track_id": person.track_id,
             "camera_id": self.camera_id,
@@ -299,6 +306,7 @@ class EventTracker:
             "is_quiet_hours": self.is_quiet_hours(timestamp),
             "companion_track_ids": companions,
             "frames_tracked": len(person.positions),
+            "zones": zones,
         }
 
     def is_quiet_hours(self, timestamp):

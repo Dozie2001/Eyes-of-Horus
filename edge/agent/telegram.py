@@ -139,7 +139,7 @@ class TelegramSender:
                     "callback_query_id": callback_query_id,
                     **({"text": text} if text else {}),
                 },
-                timeout=10,
+                timeout=30,
             )
             return response.json().get("ok", False)
         except Exception as e:
@@ -157,7 +157,7 @@ class TelegramSender:
                     "text": new_text,
                     "parse_mode": "Markdown",
                 },
-                timeout=10,
+                timeout=30,
             )
             return response.json().get("ok", False)
         except Exception as e:
@@ -175,7 +175,7 @@ class TelegramSender:
                     "caption": new_caption,
                     "parse_mode": "Markdown",
                 },
-                timeout=10,
+                timeout=30,
             )
             return response.json().get("ok", False)
         except Exception as e:
@@ -192,7 +192,21 @@ class TelegramSender:
                     "text": text,
                     "parse_mode": "Markdown",
                 },
-                timeout=10,
+                timeout=30,
+            )
+            result = response.json()
+            if result.get("ok"):
+                return True
+
+            # Markdown parsing failed — retry without parse_mode
+            logger.debug(f"Markdown send failed, retrying as plain text")
+            response = httpx.post(
+                f"{self._base_url}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                },
+                timeout=30,
             )
             return response.json().get("ok", False)
         except Exception as e:
@@ -219,7 +233,7 @@ class TelegramSender:
             response = httpx.post(
                 f"{self._base_url}/getUpdates",
                 json=params,
-                timeout=10,
+                timeout=30,
             )
             data = response.json()
             if data.get("ok"):

@@ -33,6 +33,7 @@ class CameraProfile(SQLModel, table=True):
     camera_id: str = Field(unique=True, index=True)
     description: str = ""
     schedule_json: str = ""  # JSON: {"weekday": {"start": "08:00", "end": "18:00"}, ...}
+    zones_json: str = ""     # JSON: [{"name": "entrance", "points": [[x,y],...], "type": "monitor"}, ...]
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -70,6 +71,8 @@ class CameraProfileStorage:
             existing = {row[1] for row in conn.execute(text("PRAGMA table_info(camera_profile)"))}
             if "site_id" not in existing:
                 conn.execute(text("ALTER TABLE camera_profile ADD COLUMN site_id TEXT NOT NULL DEFAULT 'default'"))
+            if "zones_json" not in existing:
+                conn.execute(text("ALTER TABLE camera_profile ADD COLUMN zones_json TEXT NOT NULL DEFAULT ''"))
             conn.commit()
 
     def get_profile(self, camera_id):
@@ -89,7 +92,7 @@ class CameraProfileStorage:
                 return None
             return self._to_dict(profile)
 
-    def upsert_profile(self, camera_id, description=None, schedule=None):
+    def upsert_profile(self, camera_id, description=None, schedule=None, zones=None):
         """
         Create or update a camera profile.
 
@@ -97,6 +100,7 @@ class CameraProfileStorage:
             camera_id: camera identifier (matches config.yaml)
             description: operator-written description of what the camera sees
             schedule: dict like {"weekday": {"start": "08:00", "end": "18:00"}, ...}
+            zones: list of zone dicts like [{"name": "entrance", "points": [[x,y],...], "type": "monitor"}]
 
         Returns:
             dict of the saved profile
@@ -112,6 +116,7 @@ class CameraProfileStorage:
                     camera_id=camera_id,
                     description=description or "",
                     schedule_json=json.dumps(schedule) if schedule else "",
+                    zones_json=json.dumps(zones) if zones else "",
                 )
                 session.add(profile)
             else:
@@ -119,11 +124,31 @@ class CameraProfileStorage:
                     profile.description = description
                 if schedule is not None:
                     profile.schedule_json = json.dumps(schedule)
+                if zones is not None:
+                    profile.zones_json = json.dumps(zones)
                 profile.updated_at = datetime.now()
 
             session.commit()
             session.refresh(profile)
             return self._to_dict(profile)
+
+    def get_zones(self, camera_id):
+        """Get parsed zones for a camera.
+
+        Returns:
+            list of zone dicts, or empty list if no zones defined.
+        """
+        with Session(self.engine) as session:
+            stmt = select(CameraProfile).where(
+                CameraProfile.camera_id == camera_id
+            )
+            profile = session.exec(stmt).first()
+            if profile is None or not profile.zones_json:
+                return []
+            try:
+                return json.loads(profile.zones_json)
+            except (json.JSONDecodeError, TypeError):
+                return []
 
     def get_all_profiles(self):
         """Get all camera profiles."""
@@ -220,11 +245,19 @@ class CameraProfileStorage:
             except (json.JSONDecodeError, TypeError):
                 schedule = None
 
+        zones = None
+        if profile.zones_json:
+            try:
+                zones = json.loads(profile.zones_json)
+            except (json.JSONDecodeError, TypeError):
+                zones = None
+
         return {
             "site_id": profile.site_id,
             "camera_id": profile.camera_id,
             "description": profile.description,
             "schedule": schedule,
+            "zones": zones,
             "created_at": profile.created_at.isoformat(),
             "updated_at": profile.updated_at.isoformat(),
         }

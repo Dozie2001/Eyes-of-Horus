@@ -29,6 +29,21 @@ from agent.decisions import DecisionStorage
 
 logger = logging.getLogger(__name__)
 
+CHAT_SYSTEM_PROMPT = """You are Eyes of Horus, a friendly AI assistant for a CCTV monitoring system.
+
+You chat naturally with security staff via Telegram. You can:
+- Answer questions about what cameras see, recent events, and alerts
+- Have normal conversations (greetings, small talk, clarifications)
+- Explain alerts and give recommendations when asked
+
+How to respond:
+- If someone says "hey", "hello", "good morning" etc — reply naturally and briefly. Do NOT dump camera data unless asked.
+- If someone asks about cameras, events, or security — use the data provided to answer.
+- If someone says "tell me more" or follows up on an alert — give details about the most recent alert.
+- Keep responses SHORT. 1-3 sentences for casual chat. A few bullet points max for data queries.
+- Do not speculate about criminal intent. Describe facts only.
+- Do not repeat the entire event history unless specifically asked for it."""
+
 
 class EscalationManager:
     """
@@ -55,9 +70,10 @@ class EscalationManager:
         self._storage = EscalationStorage(db_path, site_id=site_id)
         self._decisions = DecisionStorage(db_path, site_id=site_id)
         self._roles_db = role_storage
+        self._scene_memories = {}  # camera_id -> SceneMemory (for /ask, /scene, /compare)
 
         # Build lookup tables from config
-        self._roles = {}  # name -> EscalationRole (config structure)
+        self._roles = {}
         for role in self._esc_config.roles:
             self._roles[role.name] = role
 
@@ -91,6 +107,10 @@ class EscalationManager:
     def role_storage(self):
         """Expose role storage for API endpoints."""
         return self._roles_db
+
+    def register_scene_memory(self, camera_id, scene_memory):
+        """Register a SceneMemory instance for a camera"""
+        self._scene_memories[camera_id] = scene_memory
 
     def start(self):
         """Start background threads for timeout checking and Telegram polling."""
@@ -361,12 +381,13 @@ class EscalationManager:
                 self._handle_callback(callback)
                 continue
 
-            # Handle text messages (bot commands)
             message = update.get("message")
             if message is not None:
                 text = message.get("text", "")
                 if text.startswith("/"):
                     self._handle_command(message)
+                elif text.strip():
+                    self._handle_chat(message)
 
     def _handle_callback(self, callback):
         """Process an acknowledge or dismiss button press."""
@@ -433,8 +454,12 @@ class EscalationManager:
         command = parts[0].lower().split("@")[0]  # strip @botname suffix
         args = parts[1].strip() if len(parts) > 1 else ""
 
+        logger.info(f"Bot command: {command} from {username} ({chat_id})")
+
         if command == "/start":
             self._cmd_start(chat_id, username)
+        elif command == "/help":
+            self._cmd_help(chat_id)
         elif command == "/invite":
             self._cmd_invite(chat_id, username, args)
         elif command == "/join":
@@ -445,8 +470,47 @@ class EscalationManager:
             self._cmd_whoami(chat_id)
         elif command == "/members":
             self._cmd_members(chat_id)
+        elif command == "/ask":
+            self._cmd_ask(chat_id, username, args)
+        elif command == "/scene":
+            self._cmd_scene(chat_id, username)
+        elif command == "/compare":
+            self._cmd_compare(chat_id, username, args)
 
     # --- Bot command handlers ---
+
+    def _cmd_help(self, chat_id):
+        """Handle /help — show available commands."""
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        role = member["role"] if member else "unregistered"
+
+        lines = [
+            "Eyes of Horus Bot Commands:",
+            "",
+            "/whoami - Show your role and permissions",
+            "/scene - What all cameras see right now",
+            "/ask <question> - Ask the AI anything about the cameras",
+            "  Example: /ask is anyone near the gate?",
+            "/compare - Compare activity across cameras",
+        ]
+
+        if role in ("admin", "owner"):
+            lines.extend([
+                "",
+                "Admin commands:",
+                "/invite <role> - Generate invite code (guard/supervisor/admin)",
+                "/invite <role> @user - Invite by username",
+                "/revoke @user - Remove someone's access",
+                "/members - List all active members",
+            ])
+
+        lines.extend([
+            "",
+            "You can also just type a message and the AI will answer.",
+            "Example: Who was on camera in the last hour?",
+        ])
+
+        self._telegram.send_text(chat_id, "\n".join(lines))
 
     def _cmd_start(self, chat_id, username):
         """
@@ -656,6 +720,251 @@ class EscalationManager:
             name = f"@{m['telegram_username']}" if m["telegram_username"] else m["telegram_chat_id"]
             lines.append(f"  {m['role']} — {name}")
 
+        self._telegram.send_text(chat_id, "\n".join(lines))
+
+    # --- Conversational AI ---
+
+    def _handle_chat(self, message):
+        """Route natural language messages to the AI assistant."""
+        text = message.get("text", "").strip()
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        user = message.get("from", {})
+        username = user.get("username") or user.get("first_name", "unknown")
+
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        if member is None:
+            return  # ignore messages from non-members
+
+        # Detect if this is a security-related question or casual chat
+        security_keywords = [
+            "camera", "alert", "event", "detect", "person", "people",
+            "who", "what", "anyone", "somebody", "activity", "movement",
+            "gate", "door", "entrance", "zone", "restricted", "track",
+            "last", "recent", "today", "tonight", "hour", "ago",
+            "tell me more", "explain", "why", "details", "summary",
+            "scene", "status", "compare", "quiet hours",
+        ]
+        is_security_query = any(kw in text.lower() for kw in security_keywords)
+
+        if is_security_query:
+            self._telegram.send_text(chat_id, "Checking...")
+        else:
+            self._telegram.send_text(chat_id, "...")
+
+        from agent.prompts import build_chat_prompt
+        import os
+
+        # Only load heavy context for security queries
+        scene_context = None
+        recent_events = None
+        recent_alerts = None
+        last_alert = None
+
+        if is_security_query:
+            # Gather scene context
+            scene_ctx = {}
+            for cam_id, memory in self._scene_memories.items():
+                try:
+                    scene_ctx[cam_id] = memory.get_scene_summary()
+                except Exception:
+                    pass
+            scene_context = scene_ctx if scene_ctx else None
+
+            # Get recent events + alerts
+            try:
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                db_path = os.path.join(project_root, "data", "stangwatch.db")
+
+                from events.storage import EventStorage
+                event_store = EventStorage(db_path)
+                recent_events = event_store.get_recent(limit=10)
+                recent_alerts = self._decisions.get_alerts_only(limit=5)
+                last_alert = recent_alerts[0] if recent_alerts else None
+            except Exception as e:
+                logger.debug(f"Could not load events for chat: {e}")
+
+        prompt = build_chat_prompt(
+            message=text,
+            role=member["role"],
+            scene_context=scene_context,
+            recent_events=recent_events,
+            recent_alerts=recent_alerts,
+            last_alert=last_alert,
+        )
+
+        try:
+            if not hasattr(self, '_ollama'):
+                from config import get_config
+                config = get_config()
+                from agent.ollama_client import OllamaClient
+                self._ollama = OllamaClient(
+                    model=config.agent.model,
+                    host=config.agent.ollama_host,
+                    timeout=config.agent.timeout_seconds,
+                )
+
+            if not self._ollama.is_healthy():
+                self._telegram.send_text(chat_id, "AI model is currently unavailable. Try again later.")
+                return
+
+            response = self._ollama._client.chat(
+                model=self._ollama.model,
+                messages=[
+                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                options={"temperature": 0.3},
+            )
+
+            answer = response.message.content.strip()
+            if len(answer) > 3500:
+                answer = answer[:3500] + "..."
+            self._telegram.send_text(chat_id, answer)
+
+        except Exception as e:
+            logger.error(f"Chat failed: {e}")
+            self._telegram.send_text(chat_id, "Could not process that right now. Try /scene or /ask instead.")
+
+    # --- Interactive AI commands ---
+
+    def _cmd_ask(self, chat_id, username, question):
+        """Handle /ask <question> — anyone with a role can ask about what cameras see."""
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        if member is None:
+            self._telegram.send_text(chat_id, "You need to be registered to ask questions.")
+            return
+
+        if not question:
+            self._telegram.send_text(
+                chat_id,
+                "Usage: `/ask <your question>`\n\nExample: `/ask is anyone near the gate?`",
+            )
+            return
+
+        self._telegram.send_text(chat_id, "Thinking...")
+
+        from agent.prompts import build_interactive_prompt
+
+        scene_context = {}
+        for cam_id, memory in self._scene_memories.items():
+            try:
+                scene_context[cam_id] = memory.get_scene_summary()
+            except Exception:
+                pass
+
+        prompt = build_interactive_prompt(
+            question=question,
+            role=member["role"],
+            scene_context=scene_context if scene_context else None,
+        )
+
+        try:
+            from agent.ollama_client import OllamaClient
+            if not hasattr(self, '_ollama'):
+                from config import get_config
+                config = get_config()
+                self._ollama = OllamaClient(
+                    model=config.agent.model,
+                    host=config.agent.ollama_host,
+                    timeout=config.agent.timeout_seconds,
+                )
+
+            if not self._ollama.is_healthy():
+                self._telegram.send_text(chat_id, "AI model is currently unavailable. Try again later.")
+                return
+
+            response = self._ollama._client.chat(
+                model=self._ollama.model,
+                messages=[
+                    {"role": "system", "content": "You are Eyes of Horus, an AI security camera assistant. Answer questions about what the cameras currently see. Be factual and concise. Do not speculate about intent."},
+                    {"role": "user", "content": prompt},
+                ],
+                options={"temperature": 0.3},
+            )
+
+            answer = response.message.content.strip()
+            if len(answer) > 3500:
+                answer = answer[:3500] + "..."
+            self._telegram.send_text(chat_id, answer)
+
+        except Exception as e:
+            logger.error(f"Ask command failed: {e}")
+            self._telegram.send_text(chat_id, "Could not get an answer right now. Try again.")
+
+    def _cmd_scene(self, chat_id, username):
+        """Handle /scene — get current scene summary from all cameras."""
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        if member is None:
+            self._telegram.send_text(chat_id, "You need to be registered.")
+            return
+
+        if not self._scene_memories:
+            self._telegram.send_text(chat_id, "Scene memory is not available (Redis may be down).")
+            return
+
+        lines = ["*Current Scene Report*\n"]
+
+        for cam_id, memory in self._scene_memories.items():
+            try:
+                summary = memory.get_scene_summary()
+                people_count = summary.get("people_count", 0)
+                objects = summary.get("objects", [])
+
+                if people_count > 0:
+                    lines.append(f"*{cam_id}*: {people_count} person(s)")
+                    for p in summary.get("people", []):
+                        tid = p.get("track_id", "?")
+                        dur = p.get("duration", 0)
+                        mvmt = p.get("movement_30f", 0)
+                        lines.append(f"  Track #{tid}: {dur}s on camera, movement={mvmt}")
+                    if objects:
+                        lines.append(f"  Objects: {', '.join(objects)}")
+                else:
+                    lines.append(f"*{cam_id}*: Empty")
+            except Exception:
+                lines.append(f"*{cam_id}*: Data unavailable")
+
+        self._telegram.send_text(chat_id, "\n".join(lines))
+
+    def _cmd_compare(self, chat_id, username, args):
+        """Handle /compare — compare what different cameras see."""
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        if member is None:
+            self._telegram.send_text(chat_id, "You need to be registered.")
+            return
+
+        if not self._scene_memories:
+            self._telegram.send_text(chat_id, "Scene memory is not available.")
+            return
+
+        cam_ids = list(self._scene_memories.keys())
+        if len(cam_ids) < 2:
+            self._telegram.send_text(chat_id, "Need at least 2 cameras to compare.")
+            return
+
+        if args:
+            requested = [c.strip() for c in args.split(",")]
+            cam_ids = [c for c in requested if c in self._scene_memories]
+            if len(cam_ids) < 2:
+                available = ", ".join(self._scene_memories.keys())
+                self._telegram.send_text(chat_id, f"Could not find those cameras. Available: {available}")
+                return
+
+        lines = ["*Camera Comparison*\n"]
+        total_people = 0
+
+        for cam_id in cam_ids:
+            try:
+                summary = self._scene_memories[cam_id].get_scene_summary()
+                people = summary.get("people_count", 0)
+                total_people += people
+                objects = summary.get("objects", [])
+                obj_str = f", objects: {', '.join(objects)}" if objects else ""
+                lines.append(f"*{cam_id}*: {people} person(s){obj_str}")
+            except Exception:
+                lines.append(f"*{cam_id}*: Data unavailable")
+
+        lines.append(f"\n*Total across cameras:* {total_people} person(s)")
         self._telegram.send_text(chat_id, "\n".join(lines))
 
     # --- Helpers ---

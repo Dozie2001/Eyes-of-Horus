@@ -26,8 +26,8 @@ tracking:
 
 redis:
   enabled: true
-  host: localhost
-  port: 6379
+  host: localhost       # overridden by REDIS_HOST in .env
+  port: 6379            # overridden by REDIS_PORT in .env
   db: 0
 
 storage:
