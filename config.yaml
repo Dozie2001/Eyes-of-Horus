@@ -49,9 +49,10 @@ alerts:
 
 agent:
   enabled: true
-  model: "qwen2.5:7b"
-  vision_model: "qwen2.5vl:7b"
-  vision_provider: "groq"             # "groq" (cloud, fast) or "gemini" (cloud) or "ollama" (local)
+  model: "qwen2.5:7b"                          # local Ollama model (offline fallback)
+  vision_model: "qwen2.5vl:7b"                 # local vision model (offline fallback)
+  text_provider: "groq"                          # "groq" | "openrouter" | "ollama"
+  vision_provider: "groq"                       # "groq" | "openrouter" | "gemini" | "ollama"
   timeout_seconds: 60.0
   cooldown_seconds: 120.0
 escalation:

@@ -27,6 +27,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from agent.ollama_client import OllamaClient
+from agent.openrouter_client import OpenRouterTextClient, OpenRouterVisionClient
 from agent.vision import VisionDescriber, GeminiVisionDescriber, GroqVisionDescriber
 from agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from agent.decisions import DecisionStorage
@@ -86,7 +87,18 @@ class EvalAgent:
         self._frame_buffer = frame_buffer
         self._source_fps = source_fps
 
-        # Ollama text client
+        tp = config.agent.text_provider
+        if tp == "openrouter" and config.secrets.openrouter_api_key:
+            self._text_client = OpenRouterTextClient(
+                api_key=config.secrets.openrouter_api_key,
+                timeout=config.agent.timeout_seconds,
+            )
+            logger.info("  Text provider: OpenRouter (free tier, auto-fallback)")
+        else:
+            self._text_client = None
+            logger.info("  Text provider: Ollama (local)")
+
+        # Ollama as fallback for text (always initialized if available)
         self._ollama = OllamaClient(
             model=config.agent.model,
             host=config.agent.ollama_host,
@@ -95,7 +107,13 @@ class EvalAgent:
 
         # Vision describer (snapshot → plain-English description)
         vp = config.agent.vision_provider
-        if vp == "groq" and config.secrets.groq_api_key:
+        if vp == "openrouter" and config.secrets.openrouter_api_key:
+            self._vision = OpenRouterVisionClient(
+                api_key=config.secrets.openrouter_api_key,
+                timeout=config.agent.timeout_seconds,
+            )
+            logger.info("  Vision provider: OpenRouter (free tier, auto-fallback)")
+        elif vp == "groq" and config.secrets.groq_api_key:
             self._vision = GroqVisionDescriber(
                 api_key=config.secrets.groq_api_key,
                 timeout=config.agent.timeout_seconds,
@@ -231,9 +249,13 @@ class EvalAgent:
             if self._is_on_cooldown(track_id):
                 continue
 
-            # Check Ollama health
-            if not self._ollama.is_healthy():
-                logger.warning(f"  AGENT: Ollama unavailable, skipping {event_type} for Track #{track_id}")
+            # Check if any text provider is available
+            text_available = (
+                (self._text_client and self._text_client.is_healthy())
+                or self._ollama.is_healthy()
+            )
+            if not text_available:
+                logger.warning(f"  AGENT: No text provider available, skipping {event_type} for Track #{track_id}")
                 continue
 
             # Step 1: Find video clip and snapshot
@@ -273,8 +295,13 @@ class EvalAgent:
             )
 
             # Step 4: Text model reasons — decides severity
+            # Try OpenRouter first, fall back to Ollama
             start_ms = time.time()
-            result = self._ollama.evaluate(SYSTEM_PROMPT, user_prompt)
+            result = None
+            if self._text_client and self._text_client.is_healthy():
+                result = self._text_client.evaluate(SYSTEM_PROMPT, user_prompt)
+            if result is None and self._ollama.is_healthy():
+                result = self._ollama.evaluate(SYSTEM_PROMPT, user_prompt)
             eval_ms = int((time.time() - start_ms) * 1000)
 
             if result is None:

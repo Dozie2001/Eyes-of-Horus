@@ -793,6 +793,17 @@ class EscalationManager:
         )
 
         try:
+            # Initialize AI clients on first use
+            if not hasattr(self, '_openrouter_text'):
+                from config import get_config
+                config = get_config()
+                self._openrouter_text = None
+                if config.secrets.openrouter_api_key:
+                    from agent.openrouter_client import OpenRouterTextClient
+                    self._openrouter_text = OpenRouterTextClient(
+                        api_key=config.secrets.openrouter_api_key,
+                        timeout=config.agent.timeout_seconds,
+                    )
             if not hasattr(self, '_ollama'):
                 from config import get_config
                 config = get_config()
@@ -803,20 +814,25 @@ class EscalationManager:
                     timeout=config.agent.timeout_seconds,
                 )
 
-            if not self._ollama.is_healthy():
-                self._telegram.send_text(chat_id, "AI model is currently unavailable. Try again later.")
+            # Try OpenRouter first, fall back to Ollama
+            answer = None
+            if self._openrouter_text and self._openrouter_text.is_healthy():
+                answer = self._openrouter_text.chat(CHAT_SYSTEM_PROMPT, prompt)
+            if answer is None and self._ollama.is_healthy():
+                response = self._ollama._client.chat(
+                    model=self._ollama.model,
+                    messages=[
+                        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    options={"temperature": 0.3},
+                )
+                answer = response.message.content.strip()
+
+            if answer is None:
+                self._telegram.send_text(chat_id, "AI is currently unavailable. Try again later.")
                 return
 
-            response = self._ollama._client.chat(
-                model=self._ollama.model,
-                messages=[
-                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                options={"temperature": 0.3},
-            )
-
-            answer = response.message.content.strip()
             if len(answer) > 3500:
                 answer = answer[:3500] + "..."
             self._telegram.send_text(chat_id, answer)
@@ -859,30 +875,48 @@ class EscalationManager:
         )
 
         try:
-            from agent.ollama_client import OllamaClient
+            # Initialize AI clients on first use
+            if not hasattr(self, '_openrouter_text'):
+                from config import get_config
+                config = get_config()
+                self._openrouter_text = None
+                if config.secrets.openrouter_api_key:
+                    from agent.openrouter_client import OpenRouterTextClient
+                    self._openrouter_text = OpenRouterTextClient(
+                        api_key=config.secrets.openrouter_api_key,
+                        timeout=config.agent.timeout_seconds,
+                    )
             if not hasattr(self, '_ollama'):
                 from config import get_config
                 config = get_config()
+                from agent.ollama_client import OllamaClient
                 self._ollama = OllamaClient(
                     model=config.agent.model,
                     host=config.agent.ollama_host,
                     timeout=config.agent.timeout_seconds,
                 )
 
-            if not self._ollama.is_healthy():
-                self._telegram.send_text(chat_id, "AI model is currently unavailable. Try again later.")
+            ask_system = "You are Eyes of Horus, an AI security camera assistant. Answer questions about what the cameras currently see. Be factual and concise. Do not speculate about intent."
+
+            # Try OpenRouter first, fall back to Ollama
+            answer = None
+            if self._openrouter_text and self._openrouter_text.is_healthy():
+                answer = self._openrouter_text.chat(ask_system, prompt)
+            if answer is None and self._ollama.is_healthy():
+                response = self._ollama._client.chat(
+                    model=self._ollama.model,
+                    messages=[
+                        {"role": "system", "content": ask_system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    options={"temperature": 0.3},
+                )
+                answer = response.message.content.strip()
+
+            if answer is None:
+                self._telegram.send_text(chat_id, "AI is currently unavailable. Try again later.")
                 return
 
-            response = self._ollama._client.chat(
-                model=self._ollama.model,
-                messages=[
-                    {"role": "system", "content": "You are Eyes of Horus, an AI security camera assistant. Answer questions about what the cameras currently see. Be factual and concise. Do not speculate about intent."},
-                    {"role": "user", "content": prompt},
-                ],
-                options={"temperature": 0.3},
-            )
-
-            answer = response.message.content.strip()
             if len(answer) > 3500:
                 answer = answer[:3500] + "..."
             self._telegram.send_text(chat_id, answer)
