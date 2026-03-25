@@ -1,5 +1,6 @@
 # Eyes of Horus Edge Device Stack
-# Run: docker compose up -d
+# Run from project root: docker compose -f docker/docker-compose.yml up -d
+# Or from docker/: docker compose up -d
 # Everything starts automatically — no manual setup needed.
 
 services:
@@ -12,10 +13,17 @@ services:
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - REDIS_HOST=redis
+      # Cloud provider keys — read from .env, passed to container
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       - app_data:/app/data
-      - ./.env:/app/.env:ro
-      - ./config.yaml:/app/config.yaml:ro
+      - ../.env:/app/.env:ro
+      - ../config.yaml:/app/config.yaml:ro
     depends_on:
       ollama-pull:
         condition: service_completed_successfully
@@ -35,8 +43,11 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
 
-  # One-shot service: pulls the model then exits.
+  # One-shot service: pulls the text model then exits.
   # The app waits for this to finish before starting.
+  # Vision model pull is skipped — cloud providers (Groq/OpenRouter) are
+  # preferred for vision. To use local Ollama vision, add:
+  #   ollama pull qwen2.5vl:7b
   ollama-pull:
     image: ollama/ollama
     volumes:

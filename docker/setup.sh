@@ -1,12 +1,12 @@
 #!/bin/bash
 # Eyes of Horus Edge Device Setup
-# Run this on a fresh edge device to configure and start.
+# Run from the project root: ./docker/setup.sh
 
 set -e
 
 echo "=== Eyes of Horus Edge Setup ==="
 
-# Check for .env
+# Check for .env in project root
 if [ ! -f .env ]; then
     echo "Creating .env from template..."
     cat > .env << 'EOF'
@@ -14,7 +14,13 @@ if [ ! -f .env ]; then
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 
-# Cloud sync (provided by Eyes of Horus admin)
+# AI providers
+OPENROUTER_API_KEY=
+GROQ_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+
+# Cloud sync (provided by Eyes of Horus admin — not yet implemented)
 CLOUD_API_URL=https://api.eyesofhorus.com
 CLOUD_API_KEY=
 
@@ -27,7 +33,7 @@ EOF
 fi
 
 echo "Starting services..."
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 echo ""
 echo "=== Setup complete ==="

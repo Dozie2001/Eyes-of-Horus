@@ -3,19 +3,18 @@
 
 FROM python:3.12-slim
 
-# Install OpenCV dependencies
+# OpenCV headless needs only glib (no GL/display packages)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python dependencies (includes CUDA-enabled PyTorch for GPU support)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy edge code
+# Copy edge code and config
 COPY edge/ ./edge/
 COPY config.yaml .
 
@@ -25,5 +24,6 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolo11s.pt')"
 # Edge API port
 EXPOSE 8000
 
-# Run the edge API server
-CMD ["uvicorn", "edge.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run from edge/ directory — imports are relative (from config import ..., etc.)
+WORKDIR /app/edge
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
