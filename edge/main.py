@@ -128,12 +128,22 @@ def health():
     runners = app.state.runners
     counts = storage.count_by_type()
     camera_status = {cam_id: r.status for cam_id, r in runners.items()}
+
+    # Provider status from the first runner's eval agent registry
+    providers = {}
+    for runner in runners.values():
+        agent = getattr(runner, "_eval_agent", None)
+        if agent is not None:
+            providers = agent.registry.status()
+            break
+
     return {
         "status": "ok",
         "site_id": config.site.id,
         "site_name": config.site.name,
         "event_count": sum(counts.values()),
         "cameras": camera_status,
+        "providers": providers,
     }
 
 

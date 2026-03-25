@@ -31,6 +31,7 @@ class Secrets(BaseModel):
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
     groq_api_key: str = ""
+    openrouter_api_key: str = ""
     openclaw_token: str = ""
     # Camera credentials are dynamic — accessed via get_camera_credential()
 
@@ -170,12 +171,13 @@ class CloudConfig(BaseModel):
 class AgentConfig(BaseModel):
     """AI evaluation agent settings."""
     enabled: bool = True
-    model: str = "qwen2.5:7b"
-    vision_model: str = "qwen2.5vl:7b"  # local vision LLM (when vision_provider=ollama)
-    vision_provider: str = "ollama"  # "ollama" (local) or "gemini" (cloud, free tier)
+    model: str = "qwen2.5:7b"                    # local Ollama model (fallback)
+    vision_model: str = "qwen2.5vl:7b"           # local vision LLM (fallback)
+    text_provider: str = "openrouter"             # "openrouter" | "ollama"
+    vision_provider: str = "openrouter"           # "openrouter" | "groq" | "gemini" | "ollama"
     ollama_host: str = "http://localhost:11434"
     timeout_seconds: float = 60.0
-    cooldown_seconds: float = 120.0  # min seconds between alerts for same track
+    cooldown_seconds: float = 120.0               # min seconds between alerts for same track
 
 
 class AlertConfig(BaseModel):
@@ -318,7 +320,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -329,6 +331,7 @@ def get_config(
         anthropic_api_key=env.get("ANTHROPIC_API_KEY", ""),
         gemini_api_key=env.get("GEMINI_API_KEY", ""),
         groq_api_key=env.get("GROQ_API_KEY", ""),
+        openrouter_api_key=env.get("OPENROUTER_API_KEY", ""),
         openclaw_token=env.get("OPENCLAW_TOKEN", ""),
     )
     secrets._env = env

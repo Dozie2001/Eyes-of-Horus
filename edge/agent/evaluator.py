@@ -26,12 +26,9 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from agent.ollama_client import OllamaClient
-from agent.openrouter_client import OpenRouterTextClient, OpenRouterVisionClient
-from agent.vision import VisionDescriber, GeminiVisionDescriber, GroqVisionDescriber
 from agent.prompts import SYSTEM_PROMPT, build_user_prompt
+from agent.registry import build_registry
 from agent.decisions import DecisionStorage
-from agent.telegram import TelegramSender
 from events.tracker import (
     EVENT_APPEARED, EVENT_COMPANION,
     EVENT_OBJECTS_CHANGED, EVENT_RETURNED,
@@ -87,51 +84,8 @@ class EvalAgent:
         self._frame_buffer = frame_buffer
         self._source_fps = source_fps
 
-        tp = config.agent.text_provider
-        if tp == "openrouter" and config.secrets.openrouter_api_key:
-            self._text_client = OpenRouterTextClient(
-                api_key=config.secrets.openrouter_api_key,
-                timeout=config.agent.timeout_seconds,
-            )
-            logger.info("  Text provider: OpenRouter (free tier, auto-fallback)")
-        else:
-            self._text_client = None
-            logger.info("  Text provider: Ollama (local)")
-
-        # Ollama as fallback for text (always initialized if available)
-        self._ollama = OllamaClient(
-            model=config.agent.model,
-            host=config.agent.ollama_host,
-            timeout=config.agent.timeout_seconds,
-        )
-
-        # Vision describer (snapshot → plain-English description)
-        vp = config.agent.vision_provider
-        if vp == "openrouter" and config.secrets.openrouter_api_key:
-            self._vision = OpenRouterVisionClient(
-                api_key=config.secrets.openrouter_api_key,
-                timeout=config.agent.timeout_seconds,
-            )
-            logger.info("  Vision provider: OpenRouter (free tier, auto-fallback)")
-        elif vp == "groq" and config.secrets.groq_api_key:
-            self._vision = GroqVisionDescriber(
-                api_key=config.secrets.groq_api_key,
-                timeout=config.agent.timeout_seconds,
-            )
-            logger.info("  Vision provider: Groq (Llama 4 Scout)")
-        elif vp == "gemini" and config.secrets.gemini_api_key:
-            self._vision = GeminiVisionDescriber(
-                api_key=config.secrets.gemini_api_key,
-                timeout=config.agent.timeout_seconds,
-            )
-            logger.info("  Vision provider: Gemini Flash (cloud)")
-        else:
-            self._vision = VisionDescriber(
-                model=config.agent.vision_model,
-                host=config.agent.ollama_host,
-                timeout=config.agent.timeout_seconds,
-            )
-            logger.info(f"  Vision provider: Ollama ({config.agent.vision_model})")
+        # Provider registry (replaces hardcoded if/elif chains)
+        self._registry = build_registry(config)
 
         # Decision storage (same database)
         db_path = str(
@@ -141,12 +95,6 @@ class EvalAgent:
             )
         )
         self._decisions = DecisionStorage(db_path)
-
-        # Telegram sender (fallback when escalation is disabled)
-        self._telegram = TelegramSender(
-            bot_token=config.secrets.telegram_bot_token,
-            chat_id=config.secrets.telegram_chat_id,
-        )
 
         # Escalation manager (optional — if configured, routes alerts through chain)
         self._escalation = escalation
@@ -206,6 +154,11 @@ class EvalAgent:
         """Expose decision storage for API endpoints."""
         return self._decisions
 
+    @property
+    def registry(self):
+        """Expose provider registry for API endpoints."""
+        return self._registry
+
     def _enqueue(self, event_type, event_data):
         """Add an event to the evaluation queue (non-blocking).
 
@@ -250,11 +203,7 @@ class EvalAgent:
                 continue
 
             # Check if any text provider is available
-            text_available = (
-                (self._text_client and self._text_client.is_healthy())
-                or self._ollama.is_healthy()
-            )
-            if not text_available:
+            if self._registry.get_text() is None:
                 logger.warning(f"  AGENT: No text provider available, skipping {event_type} for Track #{track_id}")
                 continue
 
@@ -265,10 +214,14 @@ class EvalAgent:
             # Step 2: Vision perceives — describe what the camera shows
             # Prefer multi-frame video analysis over single snapshot
             visual_description = None
-            if video_path and self._vision.is_available():
-                visual_description = self._vision.describe_video(video_path)
-            if visual_description is None and snapshot_path and self._vision.is_available():
-                visual_description = self._vision.describe(snapshot_path)
+            if video_path:
+                visual_description = self._call_with_fallback(
+                    self._registry.get_vision, "describe_video", video_path,
+                )
+            if visual_description is None and snapshot_path:
+                visual_description = self._call_with_fallback(
+                    self._registry.get_vision, "describe", snapshot_path,
+                )
 
             # Step 3: Build context (now includes visual description + cross-camera)
             scene_summary = None
@@ -295,13 +248,10 @@ class EvalAgent:
             )
 
             # Step 4: Text model reasons — decides severity
-            # Try OpenRouter first, fall back to Ollama
             start_ms = time.time()
-            result = None
-            if self._text_client and self._text_client.is_healthy():
-                result = self._text_client.evaluate(SYSTEM_PROMPT, user_prompt)
-            if result is None and self._ollama.is_healthy():
-                result = self._ollama.evaluate(SYSTEM_PROMPT, user_prompt)
+            result = self._call_with_fallback(
+                self._registry.get_text, "evaluate", SYSTEM_PROMPT, user_prompt,
+            )
             eval_ms = int((time.time() - start_ms) * 1000)
 
             if result is None:
@@ -335,7 +285,7 @@ class EvalAgent:
                         event_type, event_data, frames_snapshot,
                     )
 
-                # Route through escalation if configured, otherwise simple send
+                # Route through escalation if configured, otherwise fan-out via registry
                 if self._escalation and self._escalation.is_configured():
                     alert_id = self._escalation.escalate(
                         decision_id=decision_id,
@@ -351,23 +301,72 @@ class EvalAgent:
                     )
                     status = f"escalated (#{alert_id})" if alert_id else "escalation failed"
                     logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | {status} | {eval_ms}ms")
-                elif self._telegram.is_configured():
-                    sent = self._telegram.send_alert(
-                        event_type=event_type,
-                        track_id=track_id,
-                        severity=severity,
-                        reason=reason,
-                        recommendation=recommendation,
-                        description=visual_description or "",
-                        snapshot_path=snapshot_path,
-                        video_path=video_path,
-                    )
-                    status = "sent" if sent else "FAILED"
-                    logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | Telegram: {status} | {eval_ms}ms")
                 else:
-                    logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
+                    # Fan-out to all available alert senders
+                    senders = self._registry.get_all_alerts()
+                    if senders:
+                        for sender, cb in senders:
+                            try:
+                                sent = sender.send_alert(
+                                    event_type=event_type,
+                                    track_id=track_id,
+                                    severity=severity,
+                                    reason=reason,
+                                    recommendation=recommendation,
+                                    description=visual_description or "",
+                                    snapshot_path=snapshot_path,
+                                    video_path=video_path,
+                                )
+                                if sent:
+                                    cb.record_success()
+                                else:
+                                    cb.record_failure()
+                                status = "sent" if sent else "FAILED"
+                                logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | {cb.name}: {status} | {eval_ms}ms")
+                            except Exception as e:
+                                cb.record_failure()
+                                logger.warning(f"  AGENT: Alert sender {cb.name} failed: {e}")
+                    else:
+                        logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
             else:
                 logger.debug(f"  AGENT: {severity} | {event_type} Track #{track_id} | {reason[:60]} | {eval_ms}ms")
+
+    def _call_with_fallback(self, get_fn, method_name, *args):
+        """
+        Call a provider method with automatic fallback via the registry.
+
+        1. Gets best available provider from registry
+        2. Calls the method
+        3. Records success/failure on the circuit breaker
+        4. On failure, retries with next available provider
+
+        Args:
+            get_fn: registry method (e.g. self._registry.get_text)
+            method_name: method to call on the provider (e.g. "evaluate")
+            *args: arguments to pass to the method
+
+        Returns:
+            Method result, or None if all providers fail
+        """
+        tried = set()
+        while True:
+            pair = get_fn(skip=tried)
+            if pair is None:
+                return None
+
+            provider, cb = pair
+            try:
+                result = getattr(provider, method_name)(*args)
+                if result is not None:
+                    cb.record_success()
+                    return result
+                # None result counts as failure for fallback purposes
+                cb.record_failure()
+                tried.add(cb.name)
+            except Exception as e:
+                logger.warning(f"  AGENT: {cb.name}.{method_name} failed: {e}")
+                cb.record_failure()
+                tried.add(cb.name)
 
     def _get_feedback_context(self, event_type):
         """
