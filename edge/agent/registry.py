@@ -40,7 +40,8 @@ class VisionProvider(Protocol):
 @runtime_checkable
 class AlertSender(Protocol):
     def send_alert(self, event_type, track_id, severity, reason, recommendation,
-                   description, snapshot_path, video_path) -> bool: ...
+                   description, snapshot_path, video_path,
+                   camera_id="", timestamp="") -> bool: ...
     def is_configured(self) -> bool: ...
 
 # Circuit Breaker — state tracker wrapping any provider

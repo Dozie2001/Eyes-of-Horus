@@ -192,11 +192,11 @@ class PipelineRunner:
                 from events.tracker import EVENT_DEPARTED
                 bus.on(EVENT_DEPARTED, lambda data: scene_memory.record_departure(data))
 
-            # Initialize frame ring buffer (5 seconds of frames)
+            # Initialize frame ring buffer (15 seconds of frames)
             # Must be before EvalAgent so the agent can snapshot it for alert clips
             self._source_fps = max(camera.fps, 10) or 15
             self._frame_size = (camera.width, camera.height)
-            buffer_frames = int(5 * self._source_fps)
+            buffer_frames = int(15 * self._source_fps)
             self._frame_buffer = collections.deque(maxlen=buffer_frames)
 
             # Register scene memory with escalation manager for /ask, /scene, /compare
@@ -354,41 +354,9 @@ class PipelineRunner:
             bus.on(et, make_handler(et))
 
     def _write_clip(self, path, frames):
-        """Write buffered frames to an MP4 video file. Runs in background thread.
-
-        Writes to a .tmp file first, then atomically renames to .mp4.
-        This prevents the evaluator from reading an incomplete file
-        (which causes 'moov atom not found' errors).
-        """
-        import cv2
-
-        # Use .tmp.mp4 (not .mp4.tmp) — cv2.VideoWriter uses the extension
-        # to determine container format, so it must end in .mp4
-        tmp_path = path.replace(".mp4", ".tmp.mp4")
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-
-            # Cap output at 15fps for manageable file sizes
-            output_fps = min(self._source_fps, 15)
-            step = max(1, round(self._source_fps / output_fps))
-
-            # Get actual frame size (may differ from camera if resized)
-            h, w = frames[0].shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(tmp_path, fourcc, output_fps, (w, h))
-
-            for i, frame in enumerate(frames):
-                if i % step == 0:
-                    writer.write(frame)
-
-            writer.release()
-            os.rename(tmp_path, path)
-            logger.debug(f"  CLIP: Saved {path} ({len(frames)} frames)")
-        except Exception as e:
-            logger.error(f"  CLIP: Failed to write {path}: {e}")
-            # Clean up incomplete temp file
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        """Write buffered frames to an H.264 MP4 via ffmpeg. Runs in background thread."""
+        from utils import write_clip_ffmpeg
+        write_clip_ffmpeg(path, frames, source_fps=self._source_fps)
 
     def _subscribe_event_logger(self, bus):
         """Log events to console so they're visible during development."""

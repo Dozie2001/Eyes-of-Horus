@@ -224,6 +224,7 @@ class EscalationManager:
                 video_path=video_path,
                 ack_callback_data=f"ack:{alert_id}",
                 dismiss_callback_data=f"dismiss:{alert_id}",
+                camera_id=camera_id,
             )
             if result and isinstance(result, dict) and result.get("message_id"):
                 msg_ids[chat_id] = result["message_id"]
@@ -322,6 +323,14 @@ class EscalationManager:
                     original_reason = decision.get("reason", original_reason)
                     original_recommendation = decision.get("recommendation", original_recommendation)
 
+            # Build escalated reason: keep the original natural language,
+            # add a short note about why it was escalated
+            prev_role = chain[current_level].role if current_level < len(chain) else "previous role"
+            escalated_reason = (
+                f"{original_reason}\n\n"
+                f"⬆ Escalated to {next_step.role} — no response from {prev_role}."
+            )
+
             new_msg_ids = {}
             for member in members:
                 chat_id = member["telegram_chat_id"]
@@ -330,12 +339,13 @@ class EscalationManager:
                     event_type=alert_data["event_type"],
                     track_id=alert_data["track_id"],
                     severity=severity,
-                    reason=f"[ESCALATED to {next_step.role}] {original_reason}",
+                    reason=escalated_reason,
                     recommendation=original_recommendation,
                     snapshot_path=alert_data.get("snapshot_path") or None,
                     video_path=alert_data.get("video_path") or None,
                     ack_callback_data=f"ack:{alert_id}",
                     dismiss_callback_data=f"dismiss:{alert_id}",
+                    camera_id=alert_data.get("camera_id", ""),
                 )
                 if result and isinstance(result, dict) and result.get("message_id"):
                     new_msg_ids[chat_id] = result["message_id"]
@@ -999,7 +1009,7 @@ class EscalationManager:
 
     def _edit_messages_acknowledged(self, alert_data, username):
         """Edit all Telegram messages for an alert to show acknowledgment."""
-        ack_time = datetime.now().strftime("%H:%M")
+        ack_time = datetime.now().strftime("%-I:%M%p").lower()
         ack_text = f"✅ *Acknowledged* by @{username} at {ack_time}"
 
         message_ids = alert_data.get("telegram_message_ids", {})
@@ -1010,7 +1020,7 @@ class EscalationManager:
 
     def _edit_messages_dismissed(self, alert_data, username):
         """Edit all Telegram messages for an alert to show dismissal."""
-        dismiss_time = datetime.now().strftime("%H:%M")
+        dismiss_time = datetime.now().strftime("%-I:%M%p").lower()
         dismiss_text = f"❌ *Dismissed as false alarm* by @{username} at {dismiss_time}"
 
         message_ids = alert_data.get("telegram_message_ids", {})

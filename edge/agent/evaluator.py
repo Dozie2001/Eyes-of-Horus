@@ -316,6 +316,8 @@ class EvalAgent:
                                     description=visual_description or "",
                                     snapshot_path=snapshot_path,
                                     video_path=video_path,
+                                    camera_id=self.camera_id,
+                                    timestamp=event_data.get("timestamp", ""),
                                 )
                                 if sent:
                                     cb.record_success()
@@ -470,7 +472,7 @@ class EvalAgent:
         Returns:
             str: path to the written clip, or None on failure
         """
-        import cv2
+        from utils import write_clip_ffmpeg
 
         try:
             ts = datetime.fromisoformat(event_data["timestamp"])
@@ -484,28 +486,12 @@ class EvalAgent:
 
             filename = f"alert_{ts_str}_track{track_id}_{event_type}.mp4"
             path = os.path.join(events_dir, filename)
-            tmp_path = path.replace(".mp4", ".tmp.mp4")
 
-            output_fps = min(self._source_fps, 15)
-            step = max(1, round(self._source_fps / output_fps))
-
-            h, w = frames[0].shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(tmp_path, fourcc, output_fps, (w, h))
-
-            for i, frame in enumerate(frames):
-                if i % step == 0:
-                    writer.write(frame)
-
-            writer.release()
-            os.rename(tmp_path, path)
-            logger.debug(f"  CLIP: Alert clip saved {path} ({len(frames)} frames)")
-            return path
+            ok = write_clip_ffmpeg(path, frames, source_fps=self._source_fps)
+            return path if ok else None
 
         except Exception as e:
             logger.error(f"  CLIP: Failed to write alert clip: {e}")
-            if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                os.remove(tmp_path)
             return None
 
     def _find_video(self, event_type, event_data):

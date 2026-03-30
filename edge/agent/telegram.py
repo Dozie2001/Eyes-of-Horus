@@ -13,17 +13,62 @@ Usage:
             event_type="loitering",
             track_id=5,
             severity="high",
-            reason="Person near warehouse door during quiet hours",
-            recommendation="Check camera feed",
+            reason="Someone's been standing near the warehouse door for about 4 minutes. It's 2AM and they have a bag — worth checking.",
+            recommendation="Take a look at the warehouse entrance and see who this is.",
             snapshot_path="data/events/evt_20250315_022000_track5_loitering.jpg",
+            camera_id="warehouse-east",
+            timestamp="2025-03-15T02:20:00",
         )
 """
 
 import logging
+from datetime import datetime
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def format_friendly_time(iso_str):
+    """
+    Convert ISO timestamp to human-friendly format.
+
+    '2026-03-28T14:03:22.123456' -> '28th of March 2026 at around 2:03PM'
+    """
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except (ValueError, TypeError):
+        return str(iso_str)
+
+    day = dt.day
+    if 11 <= day <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+    time_str = dt.strftime("%-I:%M%p").replace("AM", "AM").replace("PM", "PM")
+
+    return f"{day}{suffix} of {dt.strftime('%B %Y')} at around {time_str}"
+
+
+def format_duration_natural(seconds):
+    """Convert seconds to natural language. 65 -> 'about a minute', 240 -> 'about 4 minutes'."""
+    if seconds is None or seconds <= 0:
+        return "a moment"
+    seconds = float(seconds)
+    if seconds < 10:
+        return "a few seconds"
+    if seconds < 45:
+        return f"about {int(seconds)} seconds"
+    if seconds < 90:
+        return "about a minute"
+    if seconds < 3600:
+        mins = round(seconds / 60)
+        return f"about {mins} minutes"
+    hours = round(seconds / 3600, 1)
+    if hours == int(hours):
+        hours = int(hours)
+    return f"about {hours} hours"
 
 
 class TelegramSender:
@@ -40,7 +85,8 @@ class TelegramSender:
 
     def send_alert(self, event_type, track_id, severity, reason,
                    recommendation="", description="", snapshot_path=None,
-                   video_path=None, chat_id=None, reply_markup=None):
+                   video_path=None, chat_id=None, reply_markup=None,
+                   camera_id="", timestamp=""):
         """
         Send an alert to Telegram with optional video clip or snapshot.
 
@@ -57,6 +103,8 @@ class TelegramSender:
             video_path: optional path to event video clip (preferred over snapshot)
             chat_id: override recipient (default: self.chat_id)
             reply_markup: optional inline keyboard dict for buttons
+            camera_id: camera name for the footer
+            timestamp: ISO timestamp for friendly time display
 
         Returns:
             dict with "ok" bool and optional "message_id" int, or False on failure
@@ -66,25 +114,27 @@ class TelegramSender:
 
         target = chat_id or self.chat_id
 
-        severity_icon = {"low": "🟡", "medium": "🟠", "high": "🔴"}.get(
-            severity, "⚪"
+        severity_label = {"low": "🟡 Heads Up", "medium": "🟠 Alert", "high": "🔴 Urgent"}.get(
+            severity, "⚪ Notice"
         )
 
-        text = (
-            f"{severity_icon} *Eyes of Horus Alert*\n"
-            f"\n"
-            f"*Event:* {event_type.upper()}\n"
-            f"*Severity:* {severity}\n"
-            f"*Person:* Track \\#{track_id}\n"
-            f"\n"
-            f"*Why:* {_escape_markdown(reason)}\n"
-        )
+        text = f"*{_escape_markdown(severity_label)}*\n\n"
+        text += f"{_escape_markdown(reason)}\n"
 
         if description:
-            text += f"\n*Sees:* {_escape_markdown(description)}\n"
+            text += f"\n📸 {_escape_markdown(description)}\n"
 
         if recommendation:
-            text += f"\n*Action:* {_escape_markdown(recommendation)}\n"
+            text += f"\n💡 {_escape_markdown(recommendation)}\n"
+
+        # Footer: camera + friendly timestamp
+        footer_parts = []
+        if camera_id:
+            footer_parts.append(camera_id)
+        if timestamp:
+            footer_parts.append(format_friendly_time(timestamp))
+        if footer_parts:
+            text += f"\n📍 {_escape_markdown(' · '.join(footer_parts))}\n"
 
         try:
             if video_path:
@@ -104,7 +154,8 @@ class TelegramSender:
                                reason, recommendation="", description="",
                                snapshot_path=None, video_path=None,
                                ack_callback_data="",
-                               dismiss_callback_data=""):
+                               dismiss_callback_data="",
+                               camera_id="", timestamp=""):
         """
         Send an alert with inline Acknowledge and False Alarm buttons.
 
@@ -128,6 +179,8 @@ class TelegramSender:
             video_path=video_path,
             chat_id=chat_id,
             reply_markup=reply_markup,
+            camera_id=camera_id,
+            timestamp=timestamp,
         )
 
     def answer_callback(self, callback_query_id, text=""):
