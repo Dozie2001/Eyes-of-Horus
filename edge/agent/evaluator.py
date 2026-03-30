@@ -114,6 +114,22 @@ class EvalAgent:
         self._feedback_cache = {}
         self._feedback_refreshed_at = 0.0
 
+        # Clip index + upload (Supabase — optional)
+        self._clip_index = None
+        self._clip_uploader = None
+        if config.supabase.enabled:
+            try:
+                from agent.clip_index import ClipIndex
+                from agent.clip_upload import ClipUploader
+                self._clip_index = ClipIndex(config)
+                self._clip_uploader = ClipUploader(
+                    config.supabase.url,
+                    config.supabase.service_key,
+                    config.supabase.storage_bucket,
+                )
+            except Exception as e:
+                logger.warning(f"Clip index/upload init failed (non-fatal): {e}")
+
     def subscribe(self, bus):
         """Register handlers for evaluated event types on the bus."""
         for event_type in EVAL_EVENTS:
@@ -330,8 +346,91 @@ class EvalAgent:
                                 logger.warning(f"  AGENT: Alert sender {cb.name} failed: {e}")
                     else:
                         logger.debug(f"  AGENT: ALERT {severity.upper()} | {event_type} Track #{track_id} | No alert channel configured | {eval_ms}ms")
+                # Upload clip + index embedding in Supabase (background, non-blocking)
+                self._sync_to_cloud(
+                    decision_id=decision_id,
+                    event_type=event_type,
+                    track_id=track_id,
+                    severity=severity,
+                    reason=reason,
+                    recommendation=recommendation,
+                    visual_description=visual_description or "",
+                    snapshot_path=snapshot_path,
+                    video_path=video_path,
+                    event_data=event_data,
+                )
             else:
                 logger.debug(f"  AGENT: {severity} | {event_type} Track #{track_id} | {reason[:60]} | {eval_ms}ms")
+
+    def _sync_to_cloud(self, decision_id, event_type, track_id, severity,
+                       reason, recommendation, visual_description,
+                       snapshot_path, video_path, event_data):
+        """Upload clip to Supabase Storage and index embedding. Runs in background."""
+        if not self._clip_uploader and not self._clip_index:
+            return
+
+        def _do_sync():
+            try:
+                org_id = self.config.site.id
+                video_url = None
+                snapshot_url = None
+
+                # Upload video clip
+                if self._clip_uploader and video_path:
+                    filename = os.path.basename(video_path)
+                    remote = self._clip_uploader.build_remote_path(
+                        org_id, self.camera_id, filename)
+                    video_url = self._clip_uploader.upload(video_path, remote)
+
+                # Upload snapshot
+                if self._clip_uploader and snapshot_path:
+                    filename = os.path.basename(snapshot_path)
+                    remote = self._clip_uploader.build_remote_path(
+                        org_id, self.camera_id, filename)
+                    snapshot_url = self._clip_uploader.upload(snapshot_path, remote)
+
+                # Sync decision to cloud_decision table + embed
+                if self._clip_index and self._clip_index.is_ready():
+                    # Insert the decision row first
+                    try:
+                        ts = event_data.get("timestamp", datetime.now().isoformat())
+                        self._clip_index._client.table("cloud_decision").insert({
+                            "org_id": org_id,
+                            "site_id": self.config.site.id,
+                            "camera_id": self.camera_id,
+                            "event_type": event_type,
+                            "track_id": track_id,
+                            "alert": True,
+                            "severity": severity,
+                            "reason": reason,
+                            "recommendation": recommendation,
+                            "video_url": video_url or "",
+                            "snapshot_url": snapshot_url or "",
+                            "edge_created_at": ts,
+                        }).execute()
+
+                        # Get the inserted row ID to update with embedding
+                        result = self._clip_index._client.table("cloud_decision").select(
+                            "id"
+                        ).eq("org_id", org_id).eq(
+                            "camera_id", self.camera_id
+                        ).eq("edge_created_at", ts).eq(
+                            "track_id", track_id
+                        ).order("id", desc=True).limit(1).execute()
+
+                        if result.data:
+                            cloud_id = result.data[0]["id"]
+                            self._clip_index.index_decision(
+                                cloud_id, reason, visual_description,
+                            )
+
+                    except Exception as e:
+                        logger.warning(f"  AGENT: Cloud decision sync failed: {e}")
+
+            except Exception as e:
+                logger.warning(f"  AGENT: Cloud sync failed (non-fatal): {e}")
+
+        threading.Thread(target=_do_sync, daemon=True).start()
 
     def _call_with_fallback(self, get_fn, method_name, *args):
         """
