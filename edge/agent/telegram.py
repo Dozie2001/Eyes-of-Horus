@@ -386,8 +386,11 @@ class TelegramSender:
 
 
 def _escape_markdown(text):
-    """Escape Markdown special characters for Telegram."""
-    for char in ("_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+",
-                 "-", "=", "|", "{", "}", ".", "!"):
+    """Escape Markdown special characters for Telegram MarkdownV1.
+
+    V1 only uses: *bold*, _italic_, `code`, [link](url).
+    Only these four characters need escaping in body text.
+    """
+    for char in ("_", "*", "`", "["):
         text = text.replace(char, f"\\{char}")
     return text

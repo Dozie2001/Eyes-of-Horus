@@ -148,19 +148,38 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         parts.append("")
 
     # Layer 1: The triggering event
+    from agent.telegram import format_friendly_time, format_duration_natural
+
+    raw_ts = event_data.get("timestamp", "unknown")
+    friendly_ts = format_friendly_time(raw_ts) if raw_ts != "unknown" else "unknown"
+
     parts.append("## Event to evaluate")
     parts.append(f"Type: {event_type}")
     parts.append(f"Track ID: #{event_data.get('track_id', '?')}")
-    parts.append(f"Timestamp: {event_data.get('timestamp', 'unknown')}")
+    parts.append(f"Time: {friendly_ts}")
     parts.append(f"During quiet hours: {'YES' if event_data.get('is_quiet_hours') else 'no'}")
 
-    # Track measurements
+    # Track measurements — mix raw values (for AI reasoning) with natural descriptions
+    duration_secs = event_data.get("duration_seconds", 0)
+    duration_natural = format_duration_natural(duration_secs)
+    avg_30 = event_data.get("avg_movement_30f", 0)
+    avg_150 = event_data.get("avg_movement_150f", 0)
+
+    # Translate movement to words for the AI
+    def _movement_desc(val):
+        if val < 5:
+            return "standing still"
+        elif val < 20:
+            return "moving slowly"
+        else:
+            return "walking or moving quickly"
+
     parts.append("")
     parts.append("## Track measurements")
-    parts.append(f"Duration on camera: {event_data.get('duration_seconds', 0)} seconds")
+    parts.append(f"Time on camera: {duration_natural} ({duration_secs:.0f}s)")
     parts.append(f"Frames tracked: {event_data.get('frames_tracked', 0)}")
-    parts.append(f"Recent movement (1s): {event_data.get('avg_movement_30f', 0)} px/frame")
-    parts.append(f"Recent movement (5s): {event_data.get('avg_movement_150f', 0)} px/frame")
+    parts.append(f"Recent movement (1s): {avg_30} px/frame — {_movement_desc(avg_30)}")
+    parts.append(f"Recent movement (5s): {avg_150} px/frame — {_movement_desc(avg_150)}")
     parts.append(f"Total distance traveled: {event_data.get('total_distance', 0)} px")
     parts.append(f"Position spread (roaming radius): {event_data.get('position_spread', 0)} px")
 
