@@ -71,6 +71,7 @@ class EscalationManager:
         self._decisions = DecisionStorage(db_path, site_id=site_id)
         self._roles_db = role_storage
         self._scene_memories = {}  # camera_id -> SceneMemory (for /ask, /scene, /compare)
+        self._clip_index = None    # ClipIndex (for /find)
 
         # Build lookup tables from config
         self._roles = {}
@@ -109,8 +110,12 @@ class EscalationManager:
         return self._roles_db
 
     def register_scene_memory(self, camera_id, scene_memory):
-        """Register a SceneMemory instance for a camera"""
+        """Register a SceneMemory instance for a camera."""
         self._scene_memories[camera_id] = scene_memory
+
+    def register_clip_index(self, clip_index):
+        """Register a ClipIndex instance for /find command."""
+        self._clip_index = clip_index
 
     def start(self):
         """Start background threads for timeout checking and Telegram polling."""
@@ -224,6 +229,7 @@ class EscalationManager:
                 video_path=video_path,
                 ack_callback_data=f"ack:{alert_id}",
                 dismiss_callback_data=f"dismiss:{alert_id}",
+                camera_id=camera_id,
             )
             if result and isinstance(result, dict) and result.get("message_id"):
                 msg_ids[chat_id] = result["message_id"]
@@ -322,6 +328,14 @@ class EscalationManager:
                     original_reason = decision.get("reason", original_reason)
                     original_recommendation = decision.get("recommendation", original_recommendation)
 
+            # Build escalated reason: keep the original natural language,
+            # add a short note about why it was escalated
+            prev_role = chain[current_level].role if current_level < len(chain) else "previous role"
+            escalated_reason = (
+                f"{original_reason}\n\n"
+                f"⬆ Escalated to {next_step.role} — no response from {prev_role}."
+            )
+
             new_msg_ids = {}
             for member in members:
                 chat_id = member["telegram_chat_id"]
@@ -330,12 +344,13 @@ class EscalationManager:
                     event_type=alert_data["event_type"],
                     track_id=alert_data["track_id"],
                     severity=severity,
-                    reason=f"[ESCALATED to {next_step.role}] {original_reason}",
+                    reason=escalated_reason,
                     recommendation=original_recommendation,
                     snapshot_path=alert_data.get("snapshot_path") or None,
                     video_path=alert_data.get("video_path") or None,
                     ack_callback_data=f"ack:{alert_id}",
                     dismiss_callback_data=f"dismiss:{alert_id}",
+                    camera_id=alert_data.get("camera_id", ""),
                 )
                 if result and isinstance(result, dict) and result.get("message_id"):
                     new_msg_ids[chat_id] = result["message_id"]
@@ -476,6 +491,8 @@ class EscalationManager:
             self._cmd_scene(chat_id, username)
         elif command == "/compare":
             self._cmd_compare(chat_id, username, args)
+        elif command == "/find":
+            self._cmd_find(chat_id, username, args)
 
     # --- Bot command handlers ---
 
@@ -492,6 +509,8 @@ class EscalationManager:
             "/ask <question> - Ask the AI anything about the cameras",
             "  Example: /ask is anyone near the gate?",
             "/compare - Compare activity across cameras",
+            "/find <description> - Search clips by description",
+            "  Example: /find someone with a bag near the gate",
         ]
 
         if role in ("admin", "owner"):
@@ -995,11 +1014,65 @@ class EscalationManager:
         lines.append(f"\n*Total across cameras:* {total_people} person(s)")
         self._telegram.send_text(chat_id, "\n".join(lines))
 
+    def _cmd_find(self, chat_id, username, args):
+        """Handle /find — search clips by natural language description."""
+        member = self._roles_db.get_member_by_chat_id(chat_id)
+        if member is None:
+            self._telegram.send_text(chat_id, "You need to be registered.")
+            return
+
+        if not args:
+            self._telegram.send_text(
+                chat_id,
+                "Tell me what you're looking for.\n"
+                "Example: /find someone with a bag near the gate"
+            )
+            return
+
+        if not self._clip_index:
+            self._telegram.send_text(chat_id, "Clip search is not configured yet.")
+            return
+
+        self._telegram.send_text(chat_id, "Searching...")
+
+        results = self._clip_index.search(query=args, limit=5)
+
+        if not results:
+            self._telegram.send_text(chat_id, "No matching clips found.")
+            return
+
+        from agent.telegram import format_friendly_time
+
+        for i, r in enumerate(results, 1):
+            reason = r.get("reason", "No description")
+            severity = r.get("severity", "?")
+            camera = r.get("camera_id", "?")
+            ts = r.get("edge_created_at", "")
+            friendly_time = format_friendly_time(ts) if ts else "unknown time"
+            video_url = r.get("video_url", "")
+            snapshot_url = r.get("snapshot_url", "")
+            score = r.get("similarity", 0)
+
+            text = (
+                f"*{i}.* {reason}\n"
+                f"Camera: {camera} | {severity}\n"
+                f"{friendly_time}\n"
+                f"Match: {score:.0%}"
+            )
+
+            # Send with video if available, otherwise snapshot, otherwise text
+            if video_url:
+                self._telegram.send_text(chat_id, f"{text}\n\n[Watch clip]({video_url})")
+            elif snapshot_url:
+                self._telegram.send_text(chat_id, f"{text}\n\n[View snapshot]({snapshot_url})")
+            else:
+                self._telegram.send_text(chat_id, text)
+
     # --- Helpers ---
 
     def _edit_messages_acknowledged(self, alert_data, username):
         """Edit all Telegram messages for an alert to show acknowledgment."""
-        ack_time = datetime.now().strftime("%H:%M")
+        ack_time = datetime.now().strftime("%-I:%M%p").lower()
         ack_text = f"✅ *Acknowledged* by @{username} at {ack_time}"
 
         message_ids = alert_data.get("telegram_message_ids", {})
@@ -1010,7 +1083,7 @@ class EscalationManager:
 
     def _edit_messages_dismissed(self, alert_data, username):
         """Edit all Telegram messages for an alert to show dismissal."""
-        dismiss_time = datetime.now().strftime("%H:%M")
+        dismiss_time = datetime.now().strftime("%-I:%M%p").lower()
         dismiss_text = f"❌ *Dismissed as false alarm* by @{username} at {dismiss_time}"
 
         message_ids = alert_data.get("telegram_message_ids", {})

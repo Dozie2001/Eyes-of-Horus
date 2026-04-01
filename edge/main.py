@@ -95,6 +95,25 @@ async def lifespan(app: FastAPI):
     app.state.runners = runners
     app.state.pipeline = next(iter(runners.values()))
 
+    # Clip search index (Supabase pgvector — optional)
+    clip_index = None
+    if config.supabase.enabled:
+        try:
+            from agent.clip_index import ClipIndex
+            clip_index = ClipIndex(config)
+            if clip_index.is_ready():
+                logger.info("Clip search index ready")
+            else:
+                logger.warning("Clip search index not ready (Supabase or embedding provider missing)")
+                clip_index = None
+        except Exception as e:
+            logger.warning(f"Clip search index init failed: {e}")
+    app.state.clip_index = clip_index
+
+    # Wire clip index into escalation manager for /find command
+    if clip_index and escalation:
+        escalation.register_clip_index(clip_index)
+
     yield
 
     for runner in runners.values():
@@ -494,6 +513,44 @@ async def camera_stream(camera_id: str):
         generate(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+# --- Clip search ---
+
+class ClipSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+    camera_id: Optional[str] = None
+    after: Optional[str] = None  # ISO date string
+
+@app.post("/clips/search")
+def search_clips(req: ClipSearchRequest):
+    """Search clips using natural language (powered by Supabase pgvector)."""
+    clip_index = getattr(app.state, "clip_index", None)
+    if clip_index is None or not clip_index.is_ready():
+        raise HTTPException(status_code=503, detail="Clip search not configured")
+
+    results = clip_index.search(
+        query=req.query,
+        limit=req.limit,
+        camera_id=req.camera_id,
+        after=req.after,
+    )
+    return {"query": req.query, "count": len(results), "results": results}
+
+
+@app.post("/clips/reembed")
+def reembed_clips():
+    """Re-embed all clip decisions with the current embedding provider.
+
+    Use after switching embedding providers. May take a few minutes for large datasets.
+    """
+    clip_index = getattr(app.state, "clip_index", None)
+    if clip_index is None or not clip_index.is_ready():
+        raise HTTPException(status_code=503, detail="Clip search not configured")
+
+    stats = clip_index.reembed_all()
+    return stats
 
 
 # --- Static file mount for snapshots ---

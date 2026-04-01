@@ -33,6 +33,13 @@ class Secrets(BaseModel):
     groq_api_key: str = ""
     openrouter_api_key: str = ""
     openclaw_token: str = ""
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+    jina_api_key: str = ""
+    huggingface_api_key: str = ""
+    cohere_api_key: str = ""
+    google_api_key: str = ""
+    voyage_api_key: str = ""
     # Camera credentials are dynamic — accessed via get_camera_credential()
 
     # Raw env dict kept for camera credential lookups
@@ -168,6 +175,22 @@ class CloudConfig(BaseModel):
     heartbeat_interval: int = 60  # seconds between heartbeat pushes
 
 
+class EmbeddingConfig(BaseModel):
+    """Embedding provider settings for clip search."""
+    provider: str = "jina"          # jina | ollama | huggingface | cohere | google | voyage | openai
+    model: str = "jina-embeddings-v3"
+    dimensions: int = 1024          # jina-embeddings-v3 outputs 1024
+    ollama_host: str = "http://localhost:11434"  # only used when provider=ollama
+
+
+class SupabaseConfig(BaseModel):
+    """Supabase connection for cloud storage + vector search."""
+    enabled: bool = False
+    url: str = ""
+    service_key: str = ""
+    storage_bucket: str = "CLIPS"
+
+
 class AgentConfig(BaseModel):
     """AI evaluation agent settings."""
     enabled: bool = True
@@ -236,6 +259,8 @@ class StangWatchConfig(BaseModel):
     alerts: AlertConfig = AlertConfig()
     agent: AgentConfig = AgentConfig()
     escalation: EscalationConfig = EscalationConfig()
+    embeddings: EmbeddingConfig = EmbeddingConfig()
+    supabase: SupabaseConfig = SupabaseConfig()
     secrets: Secrets = Secrets()
 
 
@@ -320,7 +345,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -333,6 +358,13 @@ def get_config(
         groq_api_key=env.get("GROQ_API_KEY", ""),
         openrouter_api_key=env.get("OPENROUTER_API_KEY", ""),
         openclaw_token=env.get("OPENCLAW_TOKEN", ""),
+        supabase_url=env.get("SUPABASE_URL", ""),
+        supabase_service_key=env.get("SUPABASE_SERVICE_KEY", ""),
+        jina_api_key=env.get("JINA_API_KEY", ""),
+        huggingface_api_key=env.get("HUGGINGFACE_API_KEY", ""),
+        cohere_api_key=env.get("COHERE_API_KEY", ""),
+        google_api_key=env.get("GOOGLE_API_KEY", ""),
+        voyage_api_key=env.get("VOYAGE_API_KEY", ""),
     )
     secrets._env = env
 
@@ -361,6 +393,16 @@ def get_config(
         alerts=AlertConfig(**raw.get("alerts", {})),
         agent=AgentConfig(**raw.get("agent", {})),
         escalation=_parse_escalation(raw.get("escalation", {})),
+        embeddings=EmbeddingConfig(**raw.get("embeddings", {})),
+        supabase=SupabaseConfig(**{
+            **raw.get("supabase", {}),
+            # .env overrides config.yaml for Supabase connection
+            **({"url": env["SUPABASE_URL"]} if env.get("SUPABASE_URL") else {}),
+            **({"service_key": env["SUPABASE_SERVICE_KEY"]} if env.get("SUPABASE_SERVICE_KEY") else {}),
+            **({"storage_bucket": env["SUPABASE_STORAGE_BUCKET"]} if env.get("SUPABASE_STORAGE_BUCKET") else {}),
+            # Auto-enable if credentials are present
+            **({"enabled": True} if env.get("SUPABASE_URL") and env.get("SUPABASE_SERVICE_KEY") else {}),
+        }),
         secrets=secrets,
     )
 

@@ -64,9 +64,20 @@ Each tracked person has these measurements:
 ## Rules:
 
 - Be factual. Describe WHAT you see, not what you think someone intends.
-- Never say "thief", "criminal", "suspicious person". Say "person detected at [time] with [behavior]".
-- Keep your reason to 1-2 sentences. Reference specific numbers from the data.
-- Keep your recommendation to 1 sentence (what the operator should do).
+- Never say "thief", "criminal", "suspicious person".
+- Write your "reason" as if you are a calm security guard reporting to your boss in plain English. Use natural, conversational language that anyone can understand.
+  - BAD: "Person detected at 2026-03-23T23:19:33 during quiet hours with no movement (avg_movement_30f=0.0, avg_movement_150f=0.0) and short duration (0.8s)"
+  - GOOD: "Someone's been standing completely still near the warehouse entrance for about 4 minutes. It's 2AM and they've got a bag with them — worth a look."
+- Do NOT include raw technical values (avg_movement, px/frame, position_spread, track IDs, timestamps) in the reason or recommendation. Translate them into plain words:
+  - avg_movement < 5 → "standing still" or "barely moving"
+  - avg_movement 5-20 → "moving slowly" or "shifting around"
+  - avg_movement 20+ → "walking" or "moving quickly"
+  - duration → "been there for about X minutes" or "just showed up a few seconds ago"
+  - nearby_objects → "carrying a bag" or "has a backpack with them"
+  - is_quiet_hours → "it's the middle of the night" or "outside normal hours"
+  - companions → "there's someone else with them" or "two people together"
+- Keep your reason to 1-3 sentences. Be specific about what's unusual.
+- Keep your recommendation to 1 sentence — tell the operator what to do in plain language.
 
 ## Response format (JSON only):
 
@@ -137,19 +148,38 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
         parts.append("")
 
     # Layer 1: The triggering event
+    from agent.telegram import format_friendly_time, format_duration_natural
+
+    raw_ts = event_data.get("timestamp", "unknown")
+    friendly_ts = format_friendly_time(raw_ts) if raw_ts != "unknown" else "unknown"
+
     parts.append("## Event to evaluate")
     parts.append(f"Type: {event_type}")
     parts.append(f"Track ID: #{event_data.get('track_id', '?')}")
-    parts.append(f"Timestamp: {event_data.get('timestamp', 'unknown')}")
+    parts.append(f"Time: {friendly_ts}")
     parts.append(f"During quiet hours: {'YES' if event_data.get('is_quiet_hours') else 'no'}")
 
-    # Track measurements
+    # Track measurements — mix raw values (for AI reasoning) with natural descriptions
+    duration_secs = event_data.get("duration_seconds", 0)
+    duration_natural = format_duration_natural(duration_secs)
+    avg_30 = event_data.get("avg_movement_30f", 0)
+    avg_150 = event_data.get("avg_movement_150f", 0)
+
+    # Translate movement to words for the AI
+    def _movement_desc(val):
+        if val < 5:
+            return "standing still"
+        elif val < 20:
+            return "moving slowly"
+        else:
+            return "walking or moving quickly"
+
     parts.append("")
     parts.append("## Track measurements")
-    parts.append(f"Duration on camera: {event_data.get('duration_seconds', 0)} seconds")
+    parts.append(f"Time on camera: {duration_natural} ({duration_secs:.0f}s)")
     parts.append(f"Frames tracked: {event_data.get('frames_tracked', 0)}")
-    parts.append(f"Recent movement (1s): {event_data.get('avg_movement_30f', 0)} px/frame")
-    parts.append(f"Recent movement (5s): {event_data.get('avg_movement_150f', 0)} px/frame")
+    parts.append(f"Recent movement (1s): {avg_30} px/frame — {_movement_desc(avg_30)}")
+    parts.append(f"Recent movement (5s): {avg_150} px/frame — {_movement_desc(avg_150)}")
     parts.append(f"Total distance traveled: {event_data.get('total_distance', 0)} px")
     parts.append(f"Position spread (roaming radius): {event_data.get('position_spread', 0)} px")
 
