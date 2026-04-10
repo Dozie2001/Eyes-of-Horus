@@ -135,9 +135,17 @@ class CameraConfig(BaseModel):
         return TrackingConfig(**merged)
 
 
+class RoboflowConfig(BaseModel):
+    """Roboflow Inference Server settings."""
+    server_url: str = "http://localhost:9001"
+    model_id: str = "yolo26s-640"
+    api_key: str = ""
+
+
 class DetectionConfig(BaseModel):
-    """YOLO detection settings."""
-    model_name: str = "yolo11s.pt"
+    """Detection settings."""
+    provider: str = "roboflow"  # "roboflow" (default) or "ultralytics" (legacy)
+    model_name: str = "yolo11s.pt"  # only used when provider=ultralytics
     confidence_threshold: float = 0.5
     association_distance: float = 200.0
 
@@ -252,6 +260,7 @@ class StangWatchConfig(BaseModel):
     site: SiteConfig = SiteConfig()
     cameras: list[CameraConfig] = []
     detection: DetectionConfig = DetectionConfig()
+    roboflow: RoboflowConfig = RoboflowConfig()
     tracking: TrackingConfig = TrackingConfig()
     redis: RedisConfig = RedisConfig()
     storage: StorageConfig = StorageConfig()
@@ -345,7 +354,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_", "ROBOFLOW_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -373,6 +382,10 @@ def get_config(
         site=SiteConfig(**raw.get("site", {})),
         cameras=[CameraConfig(**c) for c in raw.get("cameras", [])],
         detection=DetectionConfig(**raw.get("detection", {})),
+        roboflow=RoboflowConfig(**{
+            **raw.get("roboflow", {}),
+            **({"api_key": env["ROBOFLOW_API_KEY"]} if env.get("ROBOFLOW_API_KEY") else {}),
+        }),
         tracking=TrackingConfig(**raw.get("tracking", {})),
         redis=RedisConfig(
             **{

@@ -138,7 +138,8 @@ class EventTracker:
             companion_distance: max pixels between two people to trigger COMPANION
             summary_interval: seconds between periodic track summaries
             camera_id: identifier for this camera (included in all events)
-            zones: list of zone dicts from camera profile (for zone-aware events)
+            zones: list of zone dicts from camera profile (see detection/zones.py
+                for the schema). Builds a ZoneChecker internally for queries.
         """
         self.bus = event_bus
         self.camera_id = camera_id
@@ -146,7 +147,9 @@ class EventTracker:
         self.departure_seconds = departure_seconds
         self.companion_distance = companion_distance
         self.summary_interval = summary_interval
-        self._zones = zones or []
+
+        from detection.zones import ZoneChecker
+        self._zone_checker = ZoneChecker(zones or [])
 
         # Active tracks: track_id → TrackedPerson
         self.tracks = {}
@@ -287,9 +290,7 @@ class EventTracker:
             if self._distance(person.positions[-1], other.positions[-1]) < self.companion_distance:
                 companions.append(other_id)
 
-        # Check which zones the person is in
-        from detection.zones import check_zones
-        zones = check_zones(person.positions[-1], self._zones) if self._zones else []
+        zones = self._zone_checker.check_point(person.positions[-1])
 
         return {
             "track_id": person.track_id,
@@ -306,7 +307,7 @@ class EventTracker:
             "is_quiet_hours": self.is_quiet_hours(timestamp),
             "companion_track_ids": companions,
             "frames_tracked": len(person.positions),
-            "zones": zones,
+            "zones": zones,  # list[dict] — name + rule fields per zone
         }
 
     def is_quiet_hours(self, timestamp):

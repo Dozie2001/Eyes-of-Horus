@@ -191,7 +191,26 @@ def build_user_prompt(event_type, event_data, scene_summary=None,
 
     zones = event_data.get("zones", [])
     if zones:
-        parts.append(f"Person is in zone(s): {', '.join(zones)}")
+        for z in zones:
+            name = z.get("name", "unnamed") if isinstance(z, dict) else str(z)
+            details = []
+            if isinstance(z, dict):
+                if z.get("severity_override"):
+                    details.append(f"severity={z['severity_override']}")
+                if z.get("active_hours_start") and z.get("active_hours_end"):
+                    details.append(
+                        f"active {z['active_hours_start']}-{z['active_hours_end']}"
+                    )
+                if z.get("allowed_object_types"):
+                    details.append(
+                        f"allowed: {', '.join(z['allowed_object_types'])}"
+                    )
+                if z.get("alert_on_entry"):
+                    details.append("alert-on-entry")
+                if z.get("alert_on_dwell_seconds"):
+                    details.append(f"dwell>{z['alert_on_dwell_seconds']}s")
+            suffix = f" ({'; '.join(details)})" if details else ""
+            parts.append(f"Person is in zone: {name}{suffix}")
     else:
         parts.append("Person is not in any defined zone")
 

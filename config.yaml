@@ -12,9 +12,14 @@ cameras:
     source: "v720://192.168.169.1:6123"
     enabled: false
 detection:
-  model_name: "yolo11s.pt"
+  provider: "roboflow"          # "roboflow" (default) or "ultralytics" (legacy)
+  model_name: "yolo11s.pt"      # only used when provider=ultralytics
   confidence_threshold: 0.5
-  association_distance: 200.0  # max pixels to associate an object with a person
+  association_distance: 200.0   # max pixels to associate an object with a person
+
+roboflow:
+  server_url: "http://localhost:9001"
+  model_id: "yolo26s-640"       # pre-trained COCO model, no API key needed
 
 tracking:
   departure_seconds: 10.0
