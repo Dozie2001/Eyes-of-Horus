@@ -70,6 +70,7 @@ class SiteConfig(BaseModel):
     id: str = "default"
     name: str = "My Location"
     log_level: str = "INFO"
+    environment: str = "development"  # "development" | "production"
 
     @field_validator("log_level")
     @classmethod
@@ -78,6 +79,14 @@ class SiteConfig(BaseModel):
         if v.upper() not in allowed:
             raise ValueError(f"log_level must be one of {allowed}, got '{v}'")
         return v.upper()
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, v):
+        allowed = {"development", "production"}
+        if v.lower() not in allowed:
+            raise ValueError(f"environment must be one of {allowed}, got '{v}'")
+        return v.lower()
 
 
 class TrackingConfig(BaseModel):
@@ -135,11 +144,21 @@ class CameraConfig(BaseModel):
         return TrackingConfig(**merged)
 
 
+class RoboflowSegmentationConfig(BaseModel):
+    """SAM3 segmentation settings — where to run it, how to reach it."""
+    provider: str = "serverless"
+    local_url: str = "http://localhost:9001"
+    serverless_url: str = "https://serverless.roboflow.com"
+    confidence_threshold: float = 0.5
+    timeout_seconds: float = 120.0
+
+
 class RoboflowConfig(BaseModel):
     """Roboflow Inference Server settings."""
     server_url: str = "http://localhost:9001"
     model_id: str = "yolo26s-640"
     api_key: str = ""
+    segmentation: RoboflowSegmentationConfig = RoboflowSegmentationConfig()
 
 
 class DetectionConfig(BaseModel):
@@ -353,8 +372,14 @@ def get_config(
         if key in os.environ:
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
+    _env_prefixes = (
+        "TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_",
+        "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_",
+        "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_", "ROBOFLOW_", "OLLAMA_",
+        "STANGWATCH_", "LOG_LEVEL",
+    )
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_", "ROBOFLOW_")):
+        if key.startswith(_env_prefixes) or key == "LOG_LEVEL":
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -377,14 +402,46 @@ def get_config(
     )
     secrets._env = env
 
+    # --- Roboflow segmentation: merge YAML + env, auto-pick provider ---
+    raw_seg = raw.get("roboflow", {}).get("segmentation", {})
+    seg_provider = (
+        env.get("ROBOFLOW_SEGMENTATION_PROVIDER")
+        or raw_seg.get("provider")
+    )
+    # If provider is unset AND an API key is present, default to serverless.
+    # Without an API key we can't call serverless, so local is the only option.
+    if seg_provider is None:
+        seg_provider = "serverless" if env.get("ROBOFLOW_API_KEY") else "local"
+
+    seg_config = RoboflowSegmentationConfig(
+        **{
+            **raw_seg,
+            "provider": seg_provider,
+            **({"local_url": env["ROBOFLOW_SEGMENTATION_LOCAL_URL"]}
+               if env.get("ROBOFLOW_SEGMENTATION_LOCAL_URL") else {}),
+            **({"serverless_url": env["ROBOFLOW_SEGMENTATION_SERVERLESS_URL"]}
+               if env.get("ROBOFLOW_SEGMENTATION_SERVERLESS_URL") else {}),
+        }
+    )
+
     # Build config from YAML sections
     config = StangWatchConfig(
-        site=SiteConfig(**raw.get("site", {})),
+        site=SiteConfig(**{
+            **raw.get("site", {}),
+            **({"environment": env["STANGWATCH_ENV"]}
+               if env.get("STANGWATCH_ENV") else {}),
+            **({"log_level": env["LOG_LEVEL"]}
+               if env.get("LOG_LEVEL") else {}),
+        }),
         cameras=[CameraConfig(**c) for c in raw.get("cameras", [])],
         detection=DetectionConfig(**raw.get("detection", {})),
         roboflow=RoboflowConfig(**{
-            **raw.get("roboflow", {}),
-            **({"api_key": env["ROBOFLOW_API_KEY"]} if env.get("ROBOFLOW_API_KEY") else {}),
+            **{k: v for k, v in raw.get("roboflow", {}).items() if k != "segmentation"},
+            **({"server_url": env["ROBOFLOW_SERVER_URL"]}
+               if env.get("ROBOFLOW_SERVER_URL") else {}),
+            **({"api_key": env["ROBOFLOW_API_KEY"]}
+               if env.get("ROBOFLOW_API_KEY") else {}),
+            "segmentation": seg_config,
         }),
         tracking=TrackingConfig(**raw.get("tracking", {})),
         redis=RedisConfig(
@@ -404,9 +461,17 @@ def get_config(
             **({"api_key": env["CLOUD_API_KEY"]} if env.get("CLOUD_API_KEY") else {}),
         }),
         alerts=AlertConfig(**raw.get("alerts", {})),
-        agent=AgentConfig(**raw.get("agent", {})),
+        agent=AgentConfig(**{
+            **raw.get("agent", {}),
+            **({"ollama_host": env["OLLAMA_HOST"]}
+               if env.get("OLLAMA_HOST") else {}),
+        }),
         escalation=_parse_escalation(raw.get("escalation", {})),
-        embeddings=EmbeddingConfig(**raw.get("embeddings", {})),
+        embeddings=EmbeddingConfig(**{
+            **raw.get("embeddings", {}),
+            **({"ollama_host": env["OLLAMA_HOST"]}
+               if env.get("OLLAMA_HOST") else {}),
+        }),
         supabase=SupabaseConfig(**{
             **raw.get("supabase", {}),
             # .env overrides config.yaml for Supabase connection

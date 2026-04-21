@@ -16,6 +16,8 @@ import type {
   QuietHours,
   AlertQualityMetrics,
   RoleMember,
+  Zone,
+  ZoneSegmentResponse,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -166,6 +168,47 @@ export function getRoleMembers() {
 
 export function getActiveMembers() {
   return apiFetch<Record<string, RoleMember[]>>("/roles/members/active");
+}
+
+
+export function getZones(cameraId: string) {
+  return apiFetch<Zone[]>(`/cameras/${cameraId}/zones`);
+}
+
+export function createZone(cameraId: string, zone: Zone) {
+  return apiFetch<{ created: string; zone_count: number }>(
+    `/cameras/${cameraId}/zones`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(zone),
+    }
+  );
+}
+
+export function deleteZone(cameraId: string, zoneName: string) {
+  return apiFetch<{ deleted: string; zone_count: number }>(
+    `/cameras/${cameraId}/zones/${encodeURIComponent(zoneName)}`,
+    { method: "DELETE" }
+  );
+}
+
+export function segmentZone(data: {
+  camera_id?: string;
+  image_base64?: string;
+  text?: string;
+  point?: { x: number; y: number; positive?: boolean };
+  confidence?: number;
+}) {
+  return apiFetch<ZoneSegmentResponse>("/zones/segment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export function cameraFrameUrl(cameraId: string) {
+  return `${API_URL}/cameras/${cameraId}/frame?t=${Date.now()}`;
 }
 
 // --- Helpers ---

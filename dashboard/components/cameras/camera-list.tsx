@@ -10,7 +10,8 @@ import { NumberTicker } from "@/components/ui/number-ticker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { CameraProfileDialog } from "./camera-profile-dialog";
-import { Pencil, Clock } from "lucide-react";
+import { Pencil, Clock, MapPin } from "lucide-react";
+import Link from "next/link";
 
 function statusColor(status: string): string {
   switch (status) {
@@ -81,17 +82,28 @@ export function CameraList() {
                         {camId}
                       </span>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditCamera(camId)}
-                      className="h-7 text-muted-foreground/40 hover:text-foreground"
-                    >
-                      <Pencil data-icon="inline-start" />
-                      <span className="font-mono text-[9px] uppercase tracking-wider">
-                        {profile ? "Edit" : "Add profile"}
-                      </span>
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Link
+                        href={`/cameras/${camId}/zones`}
+                        className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground/40 hover:text-foreground hover:bg-accent transition-colors"
+                      >
+                        <MapPin className="size-3" />
+                        <span className="font-mono text-[9px] uppercase tracking-wider">
+                          Zones
+                        </span>
+                      </Link>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setEditCamera(camId)}
+                        className="h-7 text-muted-foreground/40 hover:text-foreground"
+                      >
+                        <Pencil data-icon="inline-start" />
+                        <span className="font-mono text-[9px] uppercase tracking-wider">
+                          {profile ? "Edit" : "Add profile"}
+                        </span>
+                      </Button>
+                    </div>
                   </div>
 
                   {/* Stats */}

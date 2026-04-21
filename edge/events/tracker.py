@@ -157,6 +157,11 @@ class EventTracker:
         # Recently departed (kept briefly for RETURNED detection)
         self.departed_tracks = {}
 
+    def refresh_zones(self, zones):
+        """Hot-reload zone definitions without restarting the pipeline."""
+        from detection.zones import ZoneChecker
+        self._zone_checker = ZoneChecker(zones or [])
+
         # Last summary emission time per track
         self._last_summary_time = {}
 

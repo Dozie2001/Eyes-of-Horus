@@ -129,6 +129,26 @@ export interface AlertQualityMetrics {
   >;
 }
 
+// Zone system
+export interface Zone {
+  name: string;
+  points: number[][];
+  zone_type: "polygon" | "line";
+  severity_override?: string;
+  active_hours_start?: string;
+  active_hours_end?: string;
+  allowed_object_types?: string[];
+  alert_on_entry?: boolean;
+  alert_on_dwell_seconds?: number;
+}
+
+export interface ZoneSegmentResponse {
+  prompt_type: "text" | "click";
+  polygon_count: number;
+  polygons: number[][][];
+  image_size: { width: number; height: number };
+}
+
 // GET /roles/members -> each item
 export interface RoleMember {
   id: number;
