@@ -19,13 +19,14 @@ logger = logging.getLogger(__name__)
 
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import get_config
+from logging_setup import configure_logging
 from events.storage import EventStorage, ALL_EVENT_TYPES
 from agent.decisions import DecisionStorage
 from agent.telegram import TelegramSender
@@ -33,6 +34,7 @@ from agent.escalation import EscalationManager
 from agent.role_storage import RoleStorage
 from agent.profile_storage import CameraProfileStorage
 from pipeline.runner import PipelineRunner
+from detection.roboflow_segmenter import RoboflowSegmenter
 
 
 # Project root (stang/) — same convention as config module
@@ -42,14 +44,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize storage, escalation manager, and start detection pipeline."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     config = get_config()
-    logging.getLogger("edge").setLevel(getattr(logging, config.site.log_level, logging.INFO))
+    configure_logging(
+        log_level=config.site.log_level,
+        environment=config.site.environment,
+    )
     db_path = str(_PROJECT_ROOT / config.storage.db_path)
     site_id = config.site.id
 
@@ -95,6 +94,27 @@ async def lifespan(app: FastAPI):
     app.state.runners = runners
     app.state.pipeline = next(iter(runners.values()))
 
+    # SAM3 segmenter (Roboflow — serverless or local GPU Docker)
+    segmenter = None
+    try:
+        seg_cfg = config.roboflow.segmentation
+        segmenter = RoboflowSegmenter(
+            provider=seg_cfg.provider,
+            api_key=config.roboflow.api_key,
+            local_url=seg_cfg.local_url,
+            serverless_url=seg_cfg.serverless_url,
+            confidence_threshold=seg_cfg.confidence_threshold,
+            timeout_seconds=seg_cfg.timeout_seconds,
+        )
+        segmenter.load()
+        logger.info(
+            f"Roboflow segmenter ready (provider={seg_cfg.provider})"
+        )
+    except Exception as e:
+        logger.warning(f"Roboflow segmenter not available: {e}")
+        segmenter = None
+    app.state.segmenter = segmenter
+
     # Clip search index (Supabase pgvector — optional)
     clip_index = None
     if config.supabase.enabled:
@@ -120,6 +140,8 @@ async def lifespan(app: FastAPI):
         runner.stop()
     if escalation is not None:
         escalation.stop()
+    if segmenter is not None:
+        segmenter.close()
 
 
 app = FastAPI(
@@ -479,6 +501,75 @@ def get_alert_quality_metrics(
     return escalation.storage.get_outcome_stats(days=days, camera_id=camera_id)
 
 
+
+@app.get("/cameras/{camera_id}/frame")
+def camera_frame(camera_id: str):
+    """Single JPEG snapshot from the running pipeline. Used by the zone editor
+    to get a stable frame for click-to-segment."""
+    from fastapi.responses import Response
+
+    runners = app.state.runners
+    runner = runners.get(camera_id)
+    if runner is None:
+        raise HTTPException(status_code=404, detail=f"Camera '{camera_id}' not found")
+
+    jpeg_bytes = runner.get_current_frame()
+    if jpeg_bytes is None:
+        raise HTTPException(status_code=503, detail=f"Camera '{camera_id}' has no frame yet")
+
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
+
+class ZoneCreateRequest(BaseModel):
+    name: str
+    points: list[list[float]]
+    zone_type: str = "polygon"
+    severity_override: Optional[str] = None
+    active_hours_start: Optional[str] = None
+    active_hours_end: Optional[str] = None
+    allowed_object_types: Optional[list[str]] = None
+    alert_on_entry: bool = False
+    alert_on_dwell_seconds: Optional[float] = None
+
+
+def _refresh_tracker_zones(camera_id: str, zones: list):
+    """Push updated zones to the running EventTracker so they take effect
+    without restarting the pipeline."""
+    runners = getattr(app.state, "runners", {})
+    runner = runners.get(camera_id)
+    if runner is None:
+        return
+    tracker = getattr(runner, "_tracker", None)
+    if tracker is not None:
+        tracker.refresh_zones(zones)
+
+
+@app.get("/cameras/{camera_id}/zones")
+def list_zones(camera_id: str):
+    """List all zones for a camera."""
+    return app.state.profile_storage.get_zones(camera_id)
+
+
+@app.post("/cameras/{camera_id}/zones")
+def create_zone(camera_id: str, body: ZoneCreateRequest):
+    """Create or update a zone. If a zone with the same name exists, it is replaced."""
+    zone = body.model_dump(exclude_none=True)
+    zones = app.state.profile_storage.add_zone(camera_id, zone)
+    _refresh_tracker_zones(camera_id, zones)
+    return {"created": body.name, "zone_count": len(zones)}
+
+
+@app.delete("/cameras/{camera_id}/zones/{zone_name}")
+def delete_zone(camera_id: str, zone_name: str):
+    """Delete a zone by name."""
+    removed, zones = app.state.profile_storage.remove_zone(camera_id, zone_name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Zone '{zone_name}' not found")
+    _refresh_tracker_zones(camera_id, zones)
+    return {"deleted": zone_name, "zone_count": len(zones)}
+
+
 # --- Live camera stream ---
 
 @app.get("/cameras/{camera_id}/stream")
@@ -551,6 +642,125 @@ def reembed_clips():
 
     stats = clip_index.reembed_all()
     return stats
+
+
+# --- Zone segmentation (SAM3 proxy) ---
+
+class ZonePoint(BaseModel):
+    x: float
+    y: float
+    positive: bool = True
+
+
+class ZoneSegmentRequest(BaseModel):
+    """
+    Request a SAM3 segmentation to create a zone polygon.
+
+    Supply exactly one image source and exactly one prompt type.
+
+    Image source (choose one):
+      - camera_id: grab the latest frame from a running pipeline
+      - image_base64: a base64-encoded JPEG/PNG sent by the dashboard
+
+    Prompt (choose one):
+      - text: natural language concept (uses /sam3/concept_segment)
+      - point: click coordinate (uses /sam3/visual_segment)
+    """
+    camera_id: Optional[str] = None
+    image_base64: Optional[str] = None
+    text: Optional[str] = None
+    point: Optional[ZonePoint] = None
+    confidence: Optional[float] = None
+
+
+@app.post("/zones/segment")
+def zone_segment(req: ZoneSegmentRequest, request: Request):
+    """
+    Proxy to Roboflow SAM3 for zone creation.
+
+    Returns a list of polygons ready to be saved as a zone. Each polygon is
+    a list of [x, y] points in the original image coordinate space.
+    """
+    # --- validate prompt before touching expensive resources ---
+    if req.text and req.point:
+        raise HTTPException(
+            status_code=400, detail="Provide either text or point, not both"
+        )
+    if not req.text and not req.point:
+        raise HTTPException(
+            status_code=400, detail="Provide either text or point"
+        )
+    if not req.image_base64 and not req.camera_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either camera_id or image_base64"
+        )
+
+    segmenter = getattr(request.app.state, "segmenter", None)
+    if segmenter is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Segmentation not available. Check ROBOFLOW_API_KEY and "
+                   "roboflow.segmentation config."
+        )
+
+    # --- resolve image source ---
+    import cv2
+    import numpy as np
+    import base64 as _b64
+
+    frame = None
+    if req.image_base64:
+        try:
+            raw = _b64.b64decode(req.image_base64)
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="image_base64 is not a valid base64-encoded image"
+            )
+        if frame is None:
+            raise HTTPException(
+                status_code=400, detail="Could not decode image_base64"
+            )
+    else:
+        runners = getattr(request.app.state, "runners", {})
+        runner = runners.get(req.camera_id)
+        if runner is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Camera '{req.camera_id}' not found"
+            )
+        current = getattr(runner, "_current_frame", None)
+        if current is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Camera '{req.camera_id}' has no current frame yet"
+            )
+        frame = current.copy()
+
+    # --- run segmentation ---
+    try:
+        if req.text:
+            polygons = segmenter.segment_by_text(
+                frame, text=req.text, confidence=req.confidence
+            )
+            prompt_type = "text"
+        else:
+            polygons = segmenter.segment_by_click(
+                frame, point=(req.point.x, req.point.y), positive=req.point.positive
+            )
+            prompt_type = "click"
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Segmentation failed: {e}")
+
+    return {
+        "prompt_type": prompt_type,
+        "polygon_count": len(polygons),
+        "polygons": polygons,
+        "image_size": {"width": int(frame.shape[1]), "height": int(frame.shape[0])},
+    }
 
 
 # --- Static file mount for snapshots ---

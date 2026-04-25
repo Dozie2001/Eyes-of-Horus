@@ -150,6 +150,60 @@ class CameraProfileStorage:
             except (json.JSONDecodeError, TypeError):
                 return []
 
+    def add_zone(self, camera_id, zone):
+        """
+        Add a zone to a camera profile. If a zone with the same name exists,
+        it is replaced. Creates an empty profile if none exists yet.
+
+        Args:
+            camera_id: camera identifier
+            zone: zone dict with at least {"name", "points"}; extra rule fields
+                  are preserved.
+
+        Returns:
+            The updated full list of zones for the camera.
+        """
+        name = zone.get("name")
+        if not name:
+            raise ValueError("zone must have a 'name' field")
+
+        zones = self.get_zones(camera_id)
+        zones = [z for z in zones if z.get("name") != name]  # replace if exists
+        zones.append(zone)
+
+        # Preserve existing description/schedule
+        profile = self.get_profile(camera_id) or {}
+        self.upsert_profile(
+            camera_id=camera_id,
+            description=profile.get("description"),
+            schedule=profile.get("schedule"),
+            zones=zones,
+        )
+        return zones
+
+    def remove_zone(self, camera_id, zone_name):
+        """
+        Remove a zone by name.
+
+        Returns:
+            (removed: bool, remaining_zones: list) — removed is False if the
+            zone did not exist.
+        """
+        zones = self.get_zones(camera_id)
+        before = len(zones)
+        zones = [z for z in zones if z.get("name") != zone_name]
+        if len(zones) == before:
+            return False, zones
+
+        profile = self.get_profile(camera_id) or {}
+        self.upsert_profile(
+            camera_id=camera_id,
+            description=profile.get("description"),
+            schedule=profile.get("schedule"),
+            zones=zones,
+        )
+        return True, zones
+
     def get_all_profiles(self):
         """Get all camera profiles."""
         with Session(self.engine) as session:

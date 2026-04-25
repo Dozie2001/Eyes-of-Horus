@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 from capture.camera import Camera
 from detection.detector import Detector
+from detection.roboflow_detector import RoboflowDetector
 from events.bus import event_bus
 from events.tracker import EventTracker
 from events.storage import EventStorage
@@ -131,11 +132,20 @@ class PipelineRunner:
                 self.error = f"[{self.camera_id}] Could not connect to camera: {source}"
                 return
 
-            detector = Detector(
-                model_name=self.config.detection.model_name,
-                confidence_threshold=self.config.detection.confidence_threshold,
-                object_association_distance=self.config.detection.association_distance,
-            )
+            if self.config.detection.provider == "roboflow":
+                detector = RoboflowDetector(
+                    server_url=self.config.roboflow.server_url,
+                    model_id=self.config.roboflow.model_id,
+                    confidence_threshold=self.config.detection.confidence_threshold,
+                    object_association_distance=self.config.detection.association_distance,
+                    api_key=self.config.roboflow.api_key,
+                )
+            else:
+                detector = Detector(
+                    model_name=self.config.detection.model_name,
+                    confidence_threshold=self.config.detection.confidence_threshold,
+                    object_association_distance=self.config.detection.association_distance,
+                )
             detector.load()
 
             # Choose event bus: RedisBus if enabled, else pyee
