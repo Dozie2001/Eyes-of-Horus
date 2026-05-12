@@ -40,12 +40,24 @@ class Secrets(BaseModel):
     cohere_api_key: str = ""
     google_api_key: str = ""
     voyage_api_key: str = ""
+    whatsapp_access_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_app_secret: str = ""
+    whatsapp_recipients: str = ""  # comma-separated E.164 numbers
     # Camera credentials are dynamic — accessed via get_camera_credential()
 
     # Raw env dict kept for camera credential lookups
     _env: dict = {}
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def whatsapp_recipient_list(self) -> list[str]:
+        """Parse whatsapp_recipients CSV into a clean list of E.164 numbers."""
+        if not self.whatsapp_recipients:
+            return []
+        return [n.strip() for n in self.whatsapp_recipients.split(",") if n.strip()]
 
     def get_camera_credential(self, camera_name: str, field: str) -> str:
         """
@@ -345,7 +357,7 @@ def get_config(
             env[key] = os.environ[key]
     # Pick up env vars that aren't in the file but are set in the environment
     for key in os.environ:
-        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_")):
+        if key.startswith(("TELEGRAM_", "ANTHROPIC_", "OPENCLAW_", "CAMERA_", "REDIS_", "CLOUD_", "OPENROUTER_", "GROQ_", "GEMINI_", "SUPABASE_", "JINA_", "HUGGINGFACE_", "COHERE_", "GOOGLE_", "VOYAGE_", "OPENAI_", "WHATSAPP_")):
             if key not in env:
                 env[key] = os.environ[key]
 
@@ -365,6 +377,11 @@ def get_config(
         cohere_api_key=env.get("COHERE_API_KEY", ""),
         google_api_key=env.get("GOOGLE_API_KEY", ""),
         voyage_api_key=env.get("VOYAGE_API_KEY", ""),
+        whatsapp_access_token=env.get("WHATSAPP_ACCESS_TOKEN", ""),
+        whatsapp_phone_number_id=env.get("WHATSAPP_PHONE_NUMBER_ID", ""),
+        whatsapp_verify_token=env.get("WHATSAPP_VERIFY_TOKEN", ""),
+        whatsapp_app_secret=env.get("WHATSAPP_APP_SECRET", ""),
+        whatsapp_recipients=env.get("WHATSAPP_RECIPIENTS", ""),
     )
     secrets._env = env
 
