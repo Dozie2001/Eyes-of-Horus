@@ -229,6 +229,7 @@ def build_registry(config) -> ProviderRegistry:
     from agent.groq_text_client import GroqTextClient
     from agent.vision import VisionDescriber, GeminiVisionDescriber, GroqVisionDescriber
     from agent.telegram import TelegramSender
+    from agent.whatsapp import WhatsAppSender
 
     registry = ProviderRegistry()
     secrets = config.secrets
@@ -305,5 +306,14 @@ def build_registry(config) -> ProviderRegistry:
         chat_id=secrets.telegram_chat_id,
     )
     registry.register_alert("telegram", telegram, priority=1)
+
+    # WhatsApp (Meta Cloud API) — fans out alongside Telegram
+    whatsapp = WhatsAppSender(
+        access_token=secrets.whatsapp_access_token,
+        phone_number_id=secrets.whatsapp_phone_number_id,
+        recipients=secrets.whatsapp_recipient_list,
+        app_secret=secrets.whatsapp_app_secret,
+    )
+    registry.register_alert("whatsapp", whatsapp, priority=1)
 
     return registry
