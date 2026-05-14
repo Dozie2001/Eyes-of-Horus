@@ -54,7 +54,8 @@ class EscalationManager:
     2. Telegram poller (every 3s) — receives button presses + bot commands
     """
 
-    def __init__(self, config, telegram, db_path, role_storage, site_id="default"):
+    def __init__(self, config, telegram, db_path, role_storage, site_id="default",
+                 whatsapp=None):
         """
         Args:
             config: StangWatchConfig (reads config.escalation)
@@ -62,11 +63,16 @@ class EscalationManager:
             db_path: path to SQLite database
             role_storage: RoleStorage instance for looking up role members
             site_id: site identifier for multi-site support
+            whatsapp: optional WhatsAppSender. When configured, every alert
+                that escalates via Telegram also broadcasts to every number
+                in whatsapp.recipients (It is recipient-list-based, not
+                role-aware).
         """
         from agent.escalation_storage import EscalationStorage
 
         self._esc_config = config.escalation
         self._telegram = telegram
+        self._whatsapp = whatsapp
         self._storage = EscalationStorage(db_path, site_id=site_id)
         self._decisions = DecisionStorage(db_path, site_id=site_id)
         self._roles_db = role_storage
@@ -237,6 +243,34 @@ class EscalationManager:
         # Save message IDs for later editing on acknowledgment
         if msg_ids:
             self._storage.update_message_ids(alert_id, msg_ids)
+
+        # WhatsApp broadcast (flat recipient list, no role routing).
+        # Reuses the same ack:/dismiss: payload IDs so the webhook can call
+        # acknowledge() / dismiss() on this manager without branching.
+        if self._whatsapp is not None and self._whatsapp.is_configured():
+            wa_sent = 0
+            for recipient in self._whatsapp.recipients:
+                try:
+                    result = self._whatsapp.send_alert_with_button(
+                        recipient=recipient,
+                        event_type=event_type,
+                        track_id=track_id,
+                        severity=severity,
+                        reason=reason,
+                        recommendation=recommendation,
+                        description=description,
+                        snapshot_path=snapshot_path,
+                        video_path=video_path,
+                        ack_callback_data=f"ack:{alert_id}",
+                        dismiss_callback_data=f"dismiss:{alert_id}",
+                        camera_id=camera_id,
+                    )
+                    if result:
+                        wa_sent += 1
+                except Exception as e:
+                    logger.warning(f"  ESCALATION: WhatsApp send to {recipient} failed: {e}")
+            if wa_sent:
+                logger.debug(f"  ESCALATION: Alert #{alert_id} also sent to {wa_sent} WhatsApp recipient(s)")
 
         timeout_str = f", escalates in {first_step.timeout_minutes}m" if first_step.timeout_minutes > 0 else ""
         logger.debug(f"  ESCALATION: Alert #{alert_id} sent to {len(members)} {role_name}(s) ({severity}){timeout_str}")

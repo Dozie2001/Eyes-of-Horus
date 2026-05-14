@@ -11,7 +11,6 @@ Run:
 
 import asyncio
 import logging
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -29,10 +28,12 @@ from config import get_config
 from events.storage import EventStorage, ALL_EVENT_TYPES
 from agent.decisions import DecisionStorage
 from agent.telegram import TelegramSender
+from agent.whatsapp import WhatsAppSender
 from agent.escalation import EscalationManager
 from agent.role_storage import RoleStorage
 from agent.profile_storage import CameraProfileStorage
 from pipeline.runner import PipelineRunner
+from routers.whatsapp import router as whatsapp_router
 
 
 # Project root (stang/) — same convention as config module
@@ -65,6 +66,14 @@ async def lifespan(app: FastAPI):
     profile_storage = CameraProfileStorage(db_path, site_id=site_id)
     app.state.profile_storage = profile_storage
 
+    whatsapp = WhatsAppSender(
+        access_token=config.secrets.whatsapp_access_token,
+        phone_number_id=config.secrets.whatsapp_phone_number_id,
+        recipients=config.secrets.whatsapp_recipient_list,
+        app_secret=config.secrets.whatsapp_app_secret,
+    )
+    app.state.whatsapp = whatsapp
+
     escalation = None
     if config.escalation.enabled:
         if config.secrets.telegram_chat_id:
@@ -79,8 +88,14 @@ async def lifespan(app: FastAPI):
             bot_token=config.secrets.telegram_bot_token,
             chat_id=config.secrets.telegram_chat_id,
         )
-        escalation = EscalationManager(config, telegram, db_path, role_storage, site_id=site_id)
+        escalation = EscalationManager(
+            config, telegram, db_path, role_storage,
+            site_id=site_id,
+            whatsapp=whatsapp if whatsapp.is_configured() else None,
+        )
         escalation.start()
+        if whatsapp.is_configured():
+            logger.info(f"WhatsApp alerts enabled for {len(whatsapp.recipients)} recipient(s)")
     app.state.escalation = escalation
 
     runners = {}
@@ -136,6 +151,8 @@ app.add_middleware(
     allow_methods=["GET", "PUT", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+app.include_router(whatsapp_router)
 
 
 # --- Endpoints ---
