@@ -65,7 +65,7 @@ class EscalationManager:
             site_id: site identifier for multi-site support
             whatsapp: optional WhatsAppSender. When configured, every alert
                 that escalates via Telegram also broadcasts to every number
-                in whatsapp.recipients (v1 is recipient-list-based, not
+                in whatsapp.recipients (It is recipient-list-based, not
                 role-aware).
         """
         from agent.escalation_storage import EscalationStorage

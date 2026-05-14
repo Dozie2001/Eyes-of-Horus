@@ -43,7 +43,7 @@ async def whatsapp_verify(request: Request):
 
 @router.post("/whatsapp/webhook")
 async def whatsapp_event(request: Request):
-    """Handle inbound WhatsApp events (button replies only in v1)."""
+    """Handle inbound WhatsApp events (button replies only)."""
     whatsapp = getattr(request.app.state, "whatsapp", None)
     escalation = getattr(request.app.state, "escalation", None)
 

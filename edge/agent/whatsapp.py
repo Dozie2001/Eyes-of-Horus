@@ -3,7 +3,7 @@ WhatsApp Cloud API (Meta Graph) alert sender for Eyes of Horus.
 
 Implements the AlertSender Protocol (agent.registry.AlertSender) so the
 existing registry/escalation plumbing can fan out alerts to WhatsApp in
-parallel with Telegram. v1 broadcasts to a flat list of E.164 recipients
+parallel with Telegram. It broadcasts to a flat list of E.164 recipients
 configured via WHATSAPP_RECIPIENTS in .env.
 
 Outbound messages are sent as `interactive` button messages so the
